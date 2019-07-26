@@ -45,12 +45,13 @@ class Updater(chainer.training.StandardUpdater):
         super(Updater, self).__init__(*args, **kwargs)
         self.args = params['args']
     def update_core(self):
+        epsilon = 1e-10
         opt = self.get_optimizer('main')
 
         # positive sample
         batch = self.get_iterator('main').next()
         a,b = self.converter(batch)
-        d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1))
+        d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
         loss_pos = F.average(F.relu(d + self.args.margin + F.exp(self.coords.W[b,0]) - F.exp(self.coords.W[a,0])))
         chainer.report({'loss_pos': loss_pos}, self.coords)
 #        print(d,loss_pos)
@@ -58,19 +59,20 @@ class Updater(chainer.training.StandardUpdater):
         # negative sample
         batch = self.get_iterator('negative').next()
         a,b = self.converter(batch)
-        d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1))
+        d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
         loss_neg = F.average(F.relu(-d + self.args.margin - F.exp(self.coords.W[b,0]) + F.exp(self.coords.W[a,0])))
         chainer.report({'loss_neg': loss_neg}, self.coords)
 
         loss = loss_pos + loss_neg
 
         # super negative sample
-        batch = self.get_iterator('super_neg').next()
-        a,b = self.converter(batch)
-        d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1))
-        loss_super_neg = F.average(F.relu(-d + self.args.margin + F.exp(self.coords.W[b,0]) + F.exp(self.coords.W[a,0])))
-        chainer.report({'loss_super_neg': loss_super_neg}, self.coords)
-        loss += self.args.lambda_super_neg * loss_super_neg
+        if self.args.lambda_super_neg>0:
+            batch = self.get_iterator('super_neg').next()
+            a,b = self.converter(batch)
+            d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
+            loss_super_neg = F.average(F.relu(-d + self.args.margin + F.exp(self.coords.W[b,0]) + F.exp(self.coords.W[a,0])))
+            chainer.report({'loss_super_neg': loss_super_neg}, self.coords)
+            loss += self.args.lambda_super_neg * loss_super_neg
 
         # coulomb force between points
         if self.args.lambda_coulomb>0:
@@ -139,16 +141,35 @@ def main():
                         help='Directory to output the result')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam',
                         help='optimizer')
+    parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
     args = parser.parse_args()
 
     args.outdir = os.path.join(args.outdir, dt.now().strftime('%m%d_%H%M'))
     save_args(args, args.outdir)
 
     chainer.config.autotune = True
-    print(args)
-    chainer.print_runtime_info()
-    if args.gpu >= 0:
-        chainer.cuda.get_device(args.gpu).use()
+
+    ## ChainerMN
+    if args.mpi:
+        import chainermn
+        if args.gpu >= 0:
+            comm = chainermn.create_communicator('hierarchical')
+            chainer.cuda.get_device(comm.intra_rank).use()
+        else:
+            comm = chainermn.create_communicator('naive')
+        if comm.rank == 0:
+            primary = True
+            print(args)
+            chainer.print_runtime_info()
+        else:
+            primary = False
+        print("process {}".format(comm.rank))
+    else:
+        primary = True
+        print(args)
+        chainer.print_runtime_info()
+        if args.gpu >= 0:
+            chainer.cuda.get_device(args.gpu).use()
     
     # read graph from csv
     g = nx.DiGraph()
@@ -192,6 +213,8 @@ def main():
             optimizer = optim[args.optimizer]()
         elif args.optimizer in ['Adam','AdaBound','Eve']:
             optimizer = optim[args.optimizer](alpha=args.learning_rate, weight_decay_rate=args.weight_decay)
+        if args.mpi:
+            optimizer = chainermn.create_multi_node_optimizer(optimizer, comm)
         optimizer.setup(model)
         return optimizer
 
@@ -215,18 +238,18 @@ def main():
         )
     trainer = training.Trainer(updater, (args.epoch, 'epoch'), out=args.outdir)
 
-    log_interval = 100, 'iteration'
-    log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg', 'main/loss_super_neg', 'main/loss_coulomb','main/loss_uniform_radius']
-    trainer.extend(extensions.observe_lr('main'), trigger=log_interval)
-    trainer.extend(extensions.LogReport(keys=log_keys, trigger=log_interval))
-    trainer.extend(extensions.PrintReport(log_keys), trigger=log_interval)
-    if extensions.PlotReport.available():
-        trainer.extend(extensions.PlotReport(log_keys[1:], 'epoch', file_name='loss.png'))
-    trainer.extend(extensions.ProgressBar(update_interval=10))
-
-    # ChainerUI
-    save_args(args, args.outdir)
-    trainer.extend(extensions.LogReport(trigger=log_interval))
+    if primary:
+        log_interval = 100, 'iteration'
+        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg', 'main/loss_super_neg', 'main/loss_coulomb','main/loss_uniform_radius']
+        trainer.extend(extensions.observe_lr('main'), trigger=log_interval)
+        trainer.extend(extensions.LogReport(keys=log_keys, trigger=log_interval))
+        trainer.extend(extensions.PrintReport(log_keys), trigger=log_interval)
+        if extensions.PlotReport.available():
+            trainer.extend(extensions.PlotReport(log_keys[3:], 'epoch', file_name='loss.png'))
+        trainer.extend(extensions.ProgressBar(update_interval=10))
+        trainer.extend(extensions.LogReport(trigger=log_interval))
+        # ChainerUI
+        save_args(args, args.outdir)
 
     if args.optimizer in ['Momentum','CMomentum','AdaGrad','RMSprop','NesterovAG']:
         trainer.extend(extensions.ExponentialShift('lr', 0.5, optimizer=opt), trigger=(args.epoch/args.learning_rate_drop, 'epoch'))
@@ -236,16 +259,16 @@ def main():
     trainer.run()
 
     ## output results
-    if(args.gpu>-1):
-        dat = coords.xp.asnumpy(coords.W.data)
-    else:
-        dat = coords.W.data
-    dat[:,0] = np.exp(dat[:,0])
-    np.savetxt(os.path.join(args.outdir,"out.csv"), dat, fmt='%1.5f', delimiter=",")
-    plot_all(dat,os.path.join(args.outdir,"plot.png"))
-
-    shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
-    # shutil.copyfile(args.nonedge,os.path.join(args.outdir,os.path.basename(args.nonedge)))
+    if primary:
+        if(args.gpu>-1):
+            dat = coords.xp.asnumpy(coords.W.data)
+        else:
+            dat = coords.W.data
+        dat[:,0] = np.exp(dat[:,0])
+        np.savetxt(os.path.join(args.outdir,"out.csv"), dat, fmt='%1.5f', delimiter=",")
+        plot_all(dat,os.path.join(args.outdir,"plot.png"))
+        # copy DAG data file
+        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
 
 if __name__ == '__main__':
     main()
