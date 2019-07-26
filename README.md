@@ -25,3 +25,8 @@ python diskEmbedding.py -h
 ```
     mpiexec -n 4 python diskEmbedding.py dag.csv --mpi
 ```
+
+- Random sample generation
+```
+python disk2dag.py -o outdir
+```
