@@ -92,6 +92,29 @@ class Updater(chainer.training.StandardUpdater):
         loss.backward()
         opt.update(loss=loss)
 
+# evaluator
+class Evaluator(extensions.Evaluator):
+    name = "myval"
+    def __init__(self, *args, **kwargs):
+        params = kwargs.pop('params')
+        super(Evaluator, self).__init__(*args, **kwargs)
+        self.args = params['args']
+        self.count = 0
+    def evaluate(self):
+        coords = self.get_target('main')
+        if self.eval_hook:
+            self.eval_hook(self)
+        if(self.args.gpu>-1):
+            dat = coords.xp.asnumpy(coords.W.data).copy()
+        else:
+            dat = coords.W.data.copy()
+        dat[:,0] = np.exp(dat[:,0])
+        np.savetxt(os.path.join(self.args.outdir,"out{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
+        plot_all(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
+        self.count += 1
+        return {"myval/none":0}
+
+
 # plot results
 def plot_all(disks,fname):
     fig = plt.figure()
@@ -107,6 +130,35 @@ def plot_all(disks,fname):
     ax.set_aspect('equal')
     plt.savefig(fname)
     plt.close()
+
+# read graph from csv
+def read_graph(fname):
+    g = nx.DiGraph()
+    g_trans = set()
+    with open(fname) as infh:
+        for line in infh:
+            l = line.strip().split(',')
+            g.add_edges_from([(l[i],l[i+1]) for i in range(len(l)-1)])
+    pos_edge = []
+    reachable = {}
+    for v in g.nodes():
+        reachable[v] = nx.descendants(g,v)
+        for w in reachable[v]:
+            pos_edge.append((v,w))
+            g_trans.add((v,w))
+        reachable[v].add(v)
+        g_trans.add((v,v))
+    neg_edge = []
+    super_neg_edge = []
+    for v in g.nodes():
+        for w in g.nodes():
+            if (v,w) not in g_trans:
+                neg_edge.append((v,w))
+                # pair of nodes with no common descendant
+                if not (reachable[v] & reachable[w]):
+                    super_neg_edge.append((v,w))
+    print("#edges {}, #vertices {}".format(len(pos_edge),len(g.nodes())))
+    return (len(g.nodes()),pos_edge,neg_edge,super_neg_edge)
 
 ## main
 def main():
@@ -141,6 +193,8 @@ def main():
                         help='Directory to output the result')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam',
                         help='optimizer')
+    parser.add_argument('--vis_freq', '-vf', type=int, default=200,
+                        help='visualisation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
     args = parser.parse_args()
 
@@ -171,43 +225,17 @@ def main():
         if args.gpu >= 0:
             chainer.cuda.get_device(args.gpu).use()
     
-    # read graph from csv
-    g = nx.DiGraph()
-    g_trans = set()
-    with open(args.input) as infh:
-        for line in infh:
-            l = line.strip().split(',')
-            g.add_edges_from([(l[i],l[i+1]) for i in range(len(l)-1)])
-    pos_edge = []
-    reachable = {}
-    for v in g.nodes():
-        reachable[v] = nx.descendants(g,v)
-        for w in reachable[v]:
-            pos_edge.append((v,w))
-            g_trans.add((v,w))
-        reachable[v].add(v)
-        g_trans.add((v,v))
-    neg_edge = []
-    super_neg_edge = []
-    for v in g.nodes():
-        for w in g.nodes():
-            if (v,w) not in g_trans:
-                neg_edge.append((v,w))
-                # pair of nodes with no common descendant
-                if not (reachable[v] & reachable[w]):
-                    super_neg_edge.append((v,w))
-
-    print("#edges {}, #vertices {}".format(len(pos_edge),len(g.nodes())))
+    vnum,pos_edge,neg_edge,super_neg_edge = read_graph(args.input)
     train_iter = iterators.SerialIterator(Dataset(pos_edge), args.batchsize, shuffle=True)
     neg_train_iter = iterators.SerialIterator(Dataset(neg_edge), args.batchsize, shuffle=True)
     super_neg_train_iter = iterators.SerialIterator(Dataset(super_neg_edge), args.batchsize, shuffle=True)
     # initial embedding [1,2]^(dim+1),  the first coordinate corresponds to r (radius)
-    coords = np.random.rand(len(g.nodes()),args.dim+1)+1
+    coords = np.random.rand(vnum,args.dim+1)+1
     coords = L.Parameter(coords)
     
     # Set up an optimizer
     def make_optimizer(model):
-        if args.optimizer in ['Momentum','CMomentum','AdaGrad','RMSprop','NesterovAG']:
+        if args.optimizer in ['SGD','Momentum','CMomentum','AdaGrad','RMSprop','NesterovAG']:
             optimizer = optim[args.optimizer](lr=args.learning_rate)
         elif args.optimizer in ['AdaDelta']:
             optimizer = optim[args.optimizer]()
@@ -256,19 +284,12 @@ def main():
     elif args.optimizer in ['Adam','AdaBound','Eve']:
         trainer.extend(extensions.ExponentialShift("alpha", 0.5, optimizer=opt), trigger=(args.epoch/args.learning_rate_drop, 'epoch'))
 
-    trainer.run()
-
-    ## output results
     if primary:
-        if(args.gpu>-1):
-            dat = coords.xp.asnumpy(coords.W.data)
-        else:
-            dat = coords.W.data
-        dat[:,0] = np.exp(dat[:,0])
-        np.savetxt(os.path.join(args.outdir,"out.csv"), dat, fmt='%1.5f', delimiter=",")
-        plot_all(dat,os.path.join(args.outdir,"plot.png"))
+        trainer.extend(Evaluator(train_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
         # copy DAG data file
         shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
+
+    trainer.run()
 
 if __name__ == '__main__':
     main()
