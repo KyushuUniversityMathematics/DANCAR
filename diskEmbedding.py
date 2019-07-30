@@ -55,15 +55,16 @@ class Updater(chainer.training.StandardUpdater):
         loss_pos = F.average(F.relu(d + self.args.margin + F.exp(self.coords.W[b,0]) - F.exp(self.coords.W[a,0])))
         chainer.report({'loss_pos': loss_pos}, self.coords)
 #        print(d,loss_pos)
+        loss = loss_pos
 
         # negative sample
-        batch = self.get_iterator('negative').next()
-        a,b = self.converter(batch)
-        d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
-        loss_neg = F.average(F.relu(-d + self.args.margin - F.exp(self.coords.W[b,0]) + F.exp(self.coords.W[a,0])))
-        chainer.report({'loss_neg': loss_neg}, self.coords)
-
-        loss = loss_pos + loss_neg
+        if self.args.lambda_neg>0:
+            batch = self.get_iterator('negative').next()
+            a,b = self.converter(batch)
+            d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
+            loss_neg = F.average(F.relu(-d + self.args.margin - F.exp(self.coords.W[b,0]) + F.exp(self.coords.W[a,0])))
+            chainer.report({'loss_neg': loss_neg}, self.coords)
+            loss += self.args.lambda_neg * loss_neg
 
         # super negative sample
         if self.args.lambda_super_neg>0:
@@ -77,7 +78,9 @@ class Updater(chainer.training.StandardUpdater):
         # coulomb force between points
         if self.args.lambda_coulomb>0:
             p = np.random.permutation(len(self.coords.W))
-            loss_coulomb = -F.average((self.coords.W[p[1:],1:]-self.coords.W[p[:-1],1:])**2)
+            d = F.sqrt(F.sum((self.coords.W[p[1:],1:]-self.coords.W[p[:-1],1:])**2,axis=1)+epsilon)
+            loss_coulomb = F.average(F.relu(-d + self.args.margin + F.exp(self.coords.W[p[1:],0]) + F.exp(self.coords.W[p[:-1],0])))
+#            loss_coulomb = -F.average((self.coords.W[p[1:],1:]-self.coords.W[p[:-1],1:])**2)
             chainer.report({'loss_coulomb': loss_coulomb}, self.coords)
             loss += self.args.lambda_coulomb * loss_coulomb
         
@@ -96,6 +99,8 @@ class Updater(chainer.training.StandardUpdater):
 class Evaluator(extensions.Evaluator):
     name = "myval"
     def __init__(self, *args, **kwargs):
+        import warnings
+        warnings.filterwarnings("ignore", category=UserWarning)
         params = kwargs.pop('params')
         super(Evaluator, self).__init__(*args, **kwargs)
         self.args = params['args']
@@ -185,6 +190,8 @@ def main():
                         help='how many times to half learning rate')
     parser.add_argument('--lambda_super_neg', '-lsn', type=float, default=1,
                         help='Super negative samples')
+    parser.add_argument('--lambda_neg', '-ln', type=float, default=1,
+                        help='negative samples')
     parser.add_argument('--lambda_coulomb', '-lc', type=float, default=0,
                         help='Coulomb force between points')
     parser.add_argument('--lambda_uniform_radius', '-lur', type=float, default=0,
@@ -193,7 +200,7 @@ def main():
                         help='Directory to output the result')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam',
                         help='optimizer')
-    parser.add_argument('--vis_freq', '-vf', type=int, default=200,
+    parser.add_argument('--vis_freq', '-vf', type=int, default=2000,
                         help='visualisation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
     args = parser.parse_args()
@@ -276,6 +283,11 @@ def main():
             trainer.extend(extensions.PlotReport(log_keys[3:], 'epoch', file_name='loss.png'))
         trainer.extend(extensions.ProgressBar(update_interval=10))
         trainer.extend(extensions.LogReport(trigger=log_interval))
+        trainer.extend(Evaluator(train_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
+        trainer.extend(Evaluator(train_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.epoch, 'epoch'))
+        trainer.extend(extensions.ParameterStatistics(coords))
+        # copy input DAG data file
+        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
         # ChainerUI
         save_args(args, args.outdir)
 
@@ -283,11 +295,6 @@ def main():
         trainer.extend(extensions.ExponentialShift('lr', 0.5, optimizer=opt), trigger=(args.epoch/args.learning_rate_drop, 'epoch'))
     elif args.optimizer in ['Adam','AdaBound','Eve']:
         trainer.extend(extensions.ExponentialShift("alpha", 0.5, optimizer=opt), trigger=(args.epoch/args.learning_rate_drop, 'epoch'))
-
-    if primary:
-        trainer.extend(Evaluator(train_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
-        # copy DAG data file
-        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
 
     trainer.run()
 
