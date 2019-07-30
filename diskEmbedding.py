@@ -23,6 +23,7 @@ from datetime import datetime as dt
 from consts import optim,dtypes
 import networkx as nx
 import shutil
+
 ## dataset preparation
 class Dataset(dataset_mixin.DatasetMixin):
     def __init__(self, dat):
@@ -47,46 +48,45 @@ class Updater(chainer.training.StandardUpdater):
     def update_core(self):
         epsilon = 1e-10
         opt = self.get_optimizer('main')
+        r = F.relu(self.coords.W[:,0])+0.1
 
-        # positive sample
+        # positive sample: a contains b
         batch = self.get_iterator('main').next()
         a,b = self.converter(batch)
         d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
-        loss_pos = F.average(F.relu(d + self.args.margin + F.exp(self.coords.W[b,0]) - F.exp(self.coords.W[a,0])))
+        loss_pos = F.average(F.relu(d + self.args.margin + self.args.dag * r[b] - r[a]))
         chainer.report({'loss_pos': loss_pos}, self.coords)
-#        print(d,loss_pos)
         loss = loss_pos
 
-        # negative sample
-        if self.args.lambda_neg>0:
-            batch = self.get_iterator('negative').next()
-            a,b = self.converter(batch)
-            d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
-            loss_neg = F.average(F.relu(-d + self.args.margin - F.exp(self.coords.W[b,0]) + F.exp(self.coords.W[a,0])))
-            chainer.report({'loss_neg': loss_neg}, self.coords)
-            loss += self.args.lambda_neg * loss_neg
+        # # negative sample
+        # if self.args.lambda_neg>0:
+        #     batch = self.get_iterator('negative').next()
+        #     a,b = self.converter(batch)
+        #     d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
+        #     loss_neg = F.average(F.relu(-d + self.args.margin - r[b] + r[a]))
+        #     chainer.report({'loss_neg': loss_neg}, self.coords)
+        #     loss += self.args.lambda_neg * loss_neg
 
-        # super negative sample
-        if self.args.lambda_super_neg>0:
-            batch = self.get_iterator('super_neg').next()
-            a,b = self.converter(batch)
-            d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
-            loss_super_neg = F.average(F.relu(-d + self.args.margin + F.exp(self.coords.W[b,0]) + F.exp(self.coords.W[a,0])))
-            chainer.report({'loss_super_neg': loss_super_neg}, self.coords)
-            loss += self.args.lambda_super_neg * loss_super_neg
+        # # super negative sample
+        # if self.args.lambda_super_neg>0:
+        #     batch = self.get_iterator('super_neg').next()
+        #     a,b = self.converter(batch)
+        #     d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
+        #     loss_super_neg = F.average(F.relu(-d + self.args.margin + r[b] + r[a]))
+        #     chainer.report({'loss_super_neg': loss_super_neg}, self.coords)
+        #     loss += self.args.lambda_super_neg * loss_super_neg
 
         # coulomb force between points
         if self.args.lambda_coulomb>0:
             p = np.random.permutation(len(self.coords.W))
             d = F.sqrt(F.sum((self.coords.W[p[1:],1:]-self.coords.W[p[:-1],1:])**2,axis=1)+epsilon)
-            loss_coulomb = F.average(F.relu(-d + self.args.margin + F.exp(self.coords.W[p[1:],0]) + F.exp(self.coords.W[p[:-1],0])))
-#            loss_coulomb = -F.average((self.coords.W[p[1:],1:]-self.coords.W[p[:-1],1:])**2)
+            loss_coulomb = F.average(F.relu(-d + self.args.margin + r[p[1:]] + r[p[:-1]]))
             chainer.report({'loss_coulomb': loss_coulomb}, self.coords)
             loss += self.args.lambda_coulomb * loss_coulomb
         
         # radius should be similar
         if self.args.lambda_uniform_radius>0:            
-            loss_uniform_radius = F.average( (F.max(self.coords.W[:,0])-F.min(self.coords.W[:,0]))**2 )
+            loss_uniform_radius = F.average( (F.max(r)-F.min(r))**2 )
             chainer.report({'loss_uniform_radius': loss_uniform_radius}, self.coords)
             loss += self.args.lambda_uniform_radius * loss_uniform_radius
 
@@ -113,7 +113,8 @@ class Evaluator(extensions.Evaluator):
             dat = coords.xp.asnumpy(coords.W.data).copy()
         else:
             dat = coords.W.data.copy()
-        dat[:,0] = np.exp(dat[:,0])
+        # transform radius
+        dat[:,0] = np.maximum(dat[:,0],0)+0.1
         np.savetxt(os.path.join(self.args.outdir,"out{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
         plot_all(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
         self.count += 1
@@ -137,33 +138,48 @@ def plot_all(disks,fname):
     plt.close()
 
 # read graph from csv
+# def read_graph_old(fname):
+#     g = nx.DiGraph()
+#     g_trans = set()
+#     with open(fname) as infh:
+#         for line in infh:
+#             l = line.strip().split(',')
+#             g.add_edges_from([(l[i],l[i+1]) for i in range(len(l)-1)])
+#     pos_edge = []
+#     reachable = {}
+#     for v in g.nodes():
+#         reachable[v] = nx.descendants(g,v)
+#         for w in reachable[v]:
+#             pos_edge.append((v,w))
+#             g_trans.add((v,w))
+#         reachable[v].add(v)
+#         g_trans.add((v,v))
+#     neg_edge = []
+#     super_neg_edge = []
+#     for v in g.nodes():
+#         for w in g.nodes():
+#             if (v,w) not in g_trans:
+#                 neg_edge.append((v,w))
+#                 # pair of nodes with no common descendant
+#                 if not (reachable[v] & reachable[w]):
+#                     super_neg_edge.append((v,w))
+#     print("#edges {}, #vertices {}".format(len(pos_edge),len(g.nodes())))
+#     return (len(g.nodes()),pos_edge,neg_edge,super_neg_edge)
+
+# read graph from csv
 def read_graph(fname):
-    g = nx.DiGraph()
-    g_trans = set()
+    vert = set()
+    edge = set()
     with open(fname) as infh:
         for line in infh:
             l = line.strip().split(',')
-            g.add_edges_from([(l[i],l[i+1]) for i in range(len(l)-1)])
-    pos_edge = []
-    reachable = {}
-    for v in g.nodes():
-        reachable[v] = nx.descendants(g,v)
-        for w in reachable[v]:
-            pos_edge.append((v,w))
-            g_trans.add((v,w))
-        reachable[v].add(v)
-        g_trans.add((v,v))
-    neg_edge = []
-    super_neg_edge = []
-    for v in g.nodes():
-        for w in g.nodes():
-            if (v,w) not in g_trans:
-                neg_edge.append((v,w))
-                # pair of nodes with no common descendant
-                if not (reachable[v] & reachable[w]):
-                    super_neg_edge.append((v,w))
-    print("#edges {}, #vertices {}".format(len(pos_edge),len(g.nodes())))
-    return (len(g.nodes()),pos_edge,neg_edge,super_neg_edge)
+            vert.add(l[0])
+            for i in range(len(l)-1):
+                edge.add((l[i],l[i+1]))
+                vert.add(l[i+1])
+    print("#edges {}, #vertices {}".format(len(edge),len(vert)))
+#    print(edge)
+    return(len(vert),list(edge))
 
 ## main
 def main():
@@ -178,6 +194,7 @@ def main():
                         help='GPU ID (negative value indicates CPU)')
     parser.add_argument('--dim', '-d', type=int, default=2,
                         help='Embedding dimension')
+    parser.add_argument('--dag', type=float, default=1, help='1:DAG, 0:general')
     parser.add_argument('--margin', '-m', type=float, default=0.3,
                         help='margin for the metric boundary')
     parser.add_argument('--weight_decay', '-wd', type=float, default=0,
@@ -188,10 +205,10 @@ def main():
                         help='learning rate')
     parser.add_argument('--learning_rate_drop', '-ld', type=int, default=5,
                         help='how many times to half learning rate')
-    parser.add_argument('--lambda_super_neg', '-lsn', type=float, default=1,
-                        help='Super negative samples')
-    parser.add_argument('--lambda_neg', '-ln', type=float, default=1,
-                        help='negative samples')
+#    parser.add_argument('--lambda_super_neg', '-lsn', type=float, default=0,
+#                        help='Super negative samples')
+#    parser.add_argument('--lambda_neg', '-ln', type=float, default=0,
+#                        help='negative samples')
     parser.add_argument('--lambda_coulomb', '-lc', type=float, default=0,
                         help='Coulomb force between points')
     parser.add_argument('--lambda_uniform_radius', '-lur', type=float, default=0,
@@ -232,17 +249,19 @@ def main():
         if args.gpu >= 0:
             chainer.cuda.get_device(args.gpu).use()
     
-    vnum,pos_edge,neg_edge,super_neg_edge = read_graph(args.input)
+#    vnum,pos_edge,neg_edge,super_neg_edge = read_graph(args.input)
+    vnum,pos_edge=read_graph(args.input)
     train_iter = iterators.SerialIterator(Dataset(pos_edge), args.batchsize, shuffle=True)
-    neg_train_iter = iterators.SerialIterator(Dataset(neg_edge), args.batchsize, shuffle=True)
-    super_neg_train_iter = iterators.SerialIterator(Dataset(super_neg_edge), args.batchsize, shuffle=True)
+#    neg_train_iter = iterators.SerialIterator(Dataset(neg_edge), args.batchsize, shuffle=True)
+#    super_neg_train_iter = iterators.SerialIterator(Dataset(super_neg_edge), args.batchsize, shuffle=True)
+
     # initial embedding [1,2]^(dim+1),  the first coordinate corresponds to r (radius)
     coords = np.random.rand(vnum,args.dim+1)+1
     coords = L.Parameter(coords)
     
     # Set up an optimizer
     def make_optimizer(model):
-        if args.optimizer in ['SGD','Momentum','CMomentum','AdaGrad','RMSprop','NesterovAG']:
+        if args.optimizer in ['SGD','Momentum','CMomentum','AdaGrad','RMSprop','NesterovAG','LBFGS']:
             optimizer = optim[args.optimizer](lr=args.learning_rate)
         elif args.optimizer in ['AdaDelta']:
             optimizer = optim[args.optimizer]()
@@ -265,7 +284,7 @@ def main():
 
     updater = Updater(
         models=coords,
-        iterator={'main': train_iter, 'negative': neg_train_iter, 'super_neg': super_neg_train_iter},
+        iterator={'main': train_iter},  #'negative': neg_train_iter, 'super_neg': super_neg_train_iter},
         optimizer={'main': opt},
         device=args.gpu,
 #        converter=convert.ConcatWithAsyncTransfer(),
@@ -275,7 +294,7 @@ def main():
 
     if primary:
         log_interval = 100, 'iteration'
-        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg', 'main/loss_super_neg', 'main/loss_coulomb','main/loss_uniform_radius']
+        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_coulomb','main/loss_uniform_radius'] #'main/loss_neg', 'main/loss_super_neg',
         trainer.extend(extensions.observe_lr('main'), trigger=log_interval)
         trainer.extend(extensions.LogReport(keys=log_keys, trigger=log_interval))
         trainer.extend(extensions.PrintReport(log_keys), trigger=log_interval)
