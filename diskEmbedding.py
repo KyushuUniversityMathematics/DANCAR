@@ -83,7 +83,7 @@ class Updater(chainer.training.StandardUpdater):
             loss_coulomb = F.average(F.relu(-d + self.args.margin + r[p[1:]] + r[p[:-1]]))
             chainer.report({'loss_coulomb': loss_coulomb}, self.coords)
             loss += self.args.lambda_coulomb * loss_coulomb
-        
+
         # radius should be similar
         if self.args.lambda_uniform_radius>0:            
             loss_uniform_radius = F.average( (F.max(r)-F.min(r))**2 )
@@ -222,7 +222,10 @@ def main():
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
     args = parser.parse_args()
 
-    args.outdir = os.path.join(args.outdir, dt.now().strftime('%m%d_%H%M'))
+    outdir_name =   os.path.basename(args.input).split('.')[0] + f"_dim{args.dim}_" \
+                  + dt.now().strftime('%m%d_%H%M')
+
+    args.outdir = os.path.join(args.outdir, outdir_name)
     save_args(args, args.outdir)
 
     chainer.config.autotune = True
