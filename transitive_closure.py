@@ -33,11 +33,11 @@ def main():
     parser = argparse.ArgumentParser(description='Disk Embedding')
     parser.add_argument('--input', '-i', default="./dag_pos.csv",help='input graph')
     parser.add_argument('--output', '-o', default="./dag_full_transitive.csv",help='output graph')
-    parser.add_argument('--negative', '-n', default="./dag_negative.csv",help='negative graph')
+    # parser.add_argument('--negative', '-n', default="./dag_negative.csv",help='negative graph')
     args = parser.parse_args()
 
     g = read_graph(args.input)
     g_trans = write_transitive_closure(g,args.output)
-    write_negative_edges(g_trans,args.negative)
+    # write_negative_edges(g_trans,args.negative)
 if __name__ == "__main__":
     main()

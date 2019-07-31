@@ -129,7 +129,9 @@ def plot_all(disks,fname):
     for i,v in enumerate(disks):
         c = patches.Circle(xy=(v[1], v[2]), radius=v[0], fc=cmap(int(i%10)),alpha=0.4)
         ax.add_patch(c)
-        ax.text(v[1], v[2], i, size = 20, color = cmap(int(i%10)))
+        c = patches.Circle(xy=(v[1], v[2]), radius=0.05, fc="black")
+        ax.add_patch(c)
+        # ax.text(v[1], v[2], i, size = 20, color = cmap(int(i%10)))
         c = patches.Circle(xy=(v[1], v[2]), radius=v[0], ec='black', fill=False)
         ax.add_patch(c)
     plt.axis('scaled')

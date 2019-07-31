@@ -9,6 +9,7 @@ matplotlib.use("Agg")
 from itertools import combinations as cmb
 import networkx as nx
 from simple_table import SimpleTable
+from math import sqrt
 def get_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument('--disk', '-d', help='Path to disk file',default=None)
@@ -17,6 +18,8 @@ def get_arguments():
     parser.add_argument('--graph', '-g', help='Path to graph file',default=None)
     # parser.add_argument('--num', '-n', type=int, default=10,
     #                     help='number of disks')
+    parser.add_argument('--full', '-f', help='Path to transitive closure', default=None)
+    parser.add_argument('--centered', '-c', help='whether --dag 0', action='store_true')
     parser.add_argument('--outdir', '-o', help='Path to output',default="out")
 
     args = parser.parse_args()
@@ -39,7 +42,7 @@ def full_transitive(edge):
     # print("closure  : #edges {}, #vertices {}".format(len(reachable),g.number_of_nodes()))
     return reachable
 
-def reconstruct_graph(filename):
+def reconstruct_graph(filename, centered):
     disks = {} #idx -> (r,x,y)
     edge = set()
 
@@ -49,10 +52,10 @@ def reconstruct_graph(filename):
     for u, v in cmb(disks, 2):
         ru, xu, yu = disks[u]
         rv, xv, yv = disks[v]
-        dist_squared = (xu-xv) ** 2 + (yu-yv) ** 2
-        if dist_squared < ru: #v in B(u)
+        dist = sqrt((xu-xv) ** 2 + (yu-yv) ** 2)
+        if dist < ru - centered * rv: #v in B(u)
             edge.add((u,v))
-        if dist_squared < rv: #u in B(v)
+        if dist < rv - centered * ru: #u in B(v)
             edge.add((v,u))
     
     vert = set(disks.keys())
@@ -62,6 +65,9 @@ def reconstruct_graph(filename):
 
 def display_difference(reconst, original,n_vert, title):
     false_negative = int(n_vert * (n_vert-1) / 2) - len(reconst | original)
+
+    print(reconst - original)
+    print(original - reconst)
 
     recall    = len(reconst & original) / len(original)
     precision = len(reconst & original) / len(reconst)
@@ -82,13 +88,18 @@ def main():
     args = get_arguments()
     os.makedirs(args.outdir, exist_ok=True)
 
-    n_vert, edges_reconst  = reconstruct_graph(args.disk)
-    _,      edges_original = read_graph(args.graph)
-    edges_full = full_transitive(edges_original)
-    
+    n_vert, edges_reconst  = reconstruct_graph(args.disk, args.centered)
+
+    if args.graph != None:
+        _,      edges_original = read_graph(args.graph)
+        edges_full = full_transitive(edges_original)
+        display_difference(edges_reconst, edges_original, n_vert, "ORIGINAL")
+    if args.full != None:
+        edges_full = read_graph(args.graph)
+
     #display the difference between 2 graphs
-    display_difference(edges_reconst, edges_original, n_vert, "ORIGINAL")
     display_difference(edges_reconst, edges_full, n_vert, "CLOSURE")
 
+    
 if __name__ == '__main__':
     main()
