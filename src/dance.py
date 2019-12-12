@@ -1,6 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+"""
+the source code of Diagram-ANChor Embedding
+
+2019-12-07 update negative loss
+"""
+
 from __future__ import print_function
 import numpy as np
 import matplotlib as mpl
@@ -24,7 +30,7 @@ from consts import optim,dtypes
 import networkx as nx
 import shutil
 
-from itertools import product
+from itertools import product, combinations
 ## dataset preparation
 class Dataset_edge(dataset_mixin.DatasetMixin):
     def __init__(self, dat):
@@ -66,9 +72,10 @@ class Updater(chainer.training.StandardUpdater):
 
         # vertex sample
         batch = self.get_iterator('vertex').next()
-        a = self.converter(batch) #vertex a
-        distance = F.sqrt(F.sum((c[a]-x[a])**2,axis=1) + epsilon)
-        loss_vert = F.average(F.relu(distance - r[a] + margin)) + F.average(distance) * 0.7
+        v = self.converter(batch) #vertex a
+        distance = F.sqrt(F.sum((c[v]-x[v])**2,axis=1) + epsilon)
+        loss_vert = F.average(F.relu(distance - r[v] + margin)) * self.args.lambda_vert
+        # loss_vert = F.average(distance) * self.args.lambda_vert
         chainer.report({'loss_vert': loss_vert}, self.coords)
         loss = loss_vert
 
@@ -80,7 +87,7 @@ class Updater(chainer.training.StandardUpdater):
         chainer.report({'loss_pos': loss_pos}, self.coords)
         loss += loss_pos
         # radius should be similar
-        if self.args.lambda_uniform_radius>0:            
+        if self.args.lambda_uniform_radius>0:
             loss_uniform_radius = F.average( (F.max(r)-F.min(r))**2 )
             # loss_uniform_radius = F.average(F.relu(r[b] - r[a] + margin))
             chainer.report({'loss_uniform_radius': loss_uniform_radius}, self.coords)
@@ -97,16 +104,21 @@ class Updater(chainer.training.StandardUpdater):
             chainer.report({'loss_neg': loss_neg}, self.coords)
             loss += self.args.lambda_neg * loss_neg
 
-        # # coulomb force between points
-        # if self.args.lambda_coulomb>0:
-        #     p = np.random.permutation(len(self.coords.W))
-        #     d = F.sqrt(F.sum((self.coords.W[p[1:],1:]-self.coords.W[p[:-1],1:])**2,axis=1)+epsilon)
-        #     loss_coulomb = F.average(F.relu(-d + self.args.margin + F.exp(self.coords.W[p[1:],0]) + F.exp(self.coords.W[p[:-1],0])))
-        # #    loss_coulomb = -F.average((self.coords.W[p[1:],1:]-self.coords.W[p[:-1],1:])**2)
-        #     chainer.report({'loss_coulomb': loss_coulomb}, self.coords)
-        #     loss += self.args.lambda_coulomb * loss_coulomb
-
-
+        # coulomb force between points
+        if self.args.lambda_coulomb>0:
+            #print(len(r))
+            # p = np.random.permutation(len(r))
+            # p = np.array(list(combinations(set(v),2))) #batch数分の頂点の全組み合わせ
+            p = np.array(set(combinations(range(len(r)),2))) #全頂点の全組み合わせ
+            a,b = p[1:], p[:-1]
+            distance_ab = F.sqrt(F.sum((c[a]-x[b])**2,axis=1) + epsilon)
+            distance_ba = F.sqrt(F.sum((c[b]-x[a])**2,axis=1) + epsilon)
+            loss_coulomb = F.average(F.relu(r[a] - distance_ab + margin)) \
+                     + F.average(F.relu(r[b] - distance_ba + margin))
+            # distance = F.sqrt(F.sum((c[a]-c[b])**2,axis=1)+epsilon)
+            # loss_coulomb = F.average(F.relu(r[a] + r[b] - distance + margin))
+            chainer.report({'loss_coulomb': loss_coulomb}, self.coords)
+            loss += self.args.lambda_coulomb * loss_coulomb
         # update
         self.coords.cleargrads()
         loss.backward()
@@ -138,39 +150,42 @@ class Evaluator(extensions.Evaluator):
 def reconstruct_graph(disks, fname):
     edges = set()
     nDim = (len(disks[0]) - 1) // 2
-    for i,u in enumerate(disks):
-        r_u, c_u, x_u = u[0], u[1:nDim+1], u[nDim+1:]
-        for j,v in enumerate(disks[i:]):
-            r_v, c_v, x_v = v[0], v[1:nDim+1], v[nDim+1:]
+    r = disks[:,0]
+    c = disks[:,1:nDim+1]
+    x = disks[:,nDim+1:]
+    nVert = len(r)
+    for a,b in combinations(range(nVert),2):
+        # judge whether there is an edge u->v
+        d_a2b = np.sqrt(np.sum((c[a]-x[b])**2))
+        d_b2a = np.sqrt(np.sum((c[b]-x[a])**2))
 
-            # judge whether there is an edge u->v
-            if r_u > np.sqrt(np.sum((c_u-x_v)**2)):
-                edges.add((i,j))
-            if r_v > np.sqrt(np.sum((c_v-x_u)**2)):
-                edges.add((j,i))
+        if d_a2b <= r[a]:
+            edges.add((a,b))
+        if d_b2a <= r[b]:
+            edges.add((b,a))
 
     f = open(fname, "w")
     for i,j in sorted(edges):
         print(f"{i},{j}",file=f)        
 
-# plot results
-def plot_all(disks,fname):
-    fig = plt.figure()
-    fig.xlim(-5,5)
-    fig.ylim(-5,5)
-    ax = plt.axes()
-    cmap = plt.get_cmap("Dark2")
-    for i,v in enumerate(disks):
-        c = patches.Circle(xy=(v[1], v[2]), radius=v[0], fc=cmap(int(i%10)),alpha=0.4)
-        ax.add_patch(c)
-        ax.text(v[1], v[2], i, size = 20, color = cmap(int(i%10)))
-        c = patches.Circle(xy=(v[1], v[2]), radius=v[0], ec='black', fill=False)
-        ax.add_patch(c)
-    plt.axis('scaled')
-    ax.set_aspect('equal')
+# # plot results
+# def plot_all(disks,fname):
+#     fig = plt.figure()
+#     fig.xlim(-5,5)
+#     fig.ylim(-5,5)
+#     ax = plt.axes()
+#     cmap = plt.get_cmap("Dark2")
+#     for i,v in enumerate(disks):
+#         c = patches.Circle(xy=(v[1], v[2]), radius=v[0], fc=cmap(int(i%10)),alpha=0.4)
+#         ax.add_patch(c)
+#         ax.text(v[1], v[2], i, size = 20, color = cmap(int(i%10)))
+#         c = patches.Circle(xy=(v[1], v[2]), radius=v[0], ec='black', fill=False)
+#         ax.add_patch(c)
+#     plt.axis('scaled')
+#     ax.set_aspect('equal')
 
-    plt.savefig(fname)
-    plt.close()
+#     plt.savefig(fname)
+#     plt.close()
 
 # read graph from csv
 def read_graph(fname):
@@ -236,9 +251,11 @@ def main():
     parser.add_argument('--lambda_neg', '-ln', type=float, default=1,
                         help='negative samples')
     parser.add_argument('--lambda_coulomb', '-lc', type=float, default=0,
-                        help='Coulomb force between points')
+                        help='Coulomb force between disks')
     parser.add_argument('--lambda_uniform_radius', '-lur', type=float, default=0,
                         help='Radius should be similar')
+    parser.add_argument('--lambda_vert', '-lv', type=float, default=0.5,
+                        help='anchor should be in its corresponding disk')
     parser.add_argument('--outdir', '-o', default='../result',
                         help='Directory to output the result')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam',
@@ -322,7 +339,7 @@ def main():
 
     if primary:
         log_interval = 100, 'iteration'
-        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg', 'main/loss_vert']
+        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg', 'main/loss_vert', 'main/loss_coulomb']
         trainer.extend(extensions.observe_lr('main'), trigger=log_interval)
         trainer.extend(extensions.LogReport(keys=log_keys, trigger=log_interval))
         trainer.extend(extensions.PrintReport(log_keys), trigger=log_interval)
