@@ -70,22 +70,30 @@ class Updater(chainer.training.StandardUpdater):
         c = self.coords.W[:,1:nDim+1]
         x = self.coords.W[:,nDim+1:]
 
-        # vertex sample
-        batch = self.get_iterator('vertex').next()
-        v = self.converter(batch) #vertex a
-        distance = F.sqrt(F.sum((c[v]-x[v])**2,axis=1) + epsilon)
-        loss_vert = F.average(F.relu(distance - r[v] + margin)) * self.args.lambda_vert
-        # loss_vert = F.average(distance) * self.args.lambda_vert
-        chainer.report({'loss_vert': loss_vert}, self.coords)
-        loss = loss_vert
-
-        # positive sample
+        # positive loss
         batch = self.get_iterator('main').next()
         a,b = self.converter(batch) #edge a->b
         distance = F.sqrt(F.sum((c[a]-x[b])**2,axis=1)+epsilon)
         loss_pos = F.average(F.relu(distance - r[a] + margin))
         chainer.report({'loss_pos': loss_pos}, self.coords)
-        loss += loss_pos
+        loss = loss_pos
+
+        # anchor loss
+        batch = self.get_iterator('vertex').next()
+        v = self.converter(batch) #vertex a
+        distance2 = F.sum((c[v]-x[v])**2,axis=1) + epsilon
+        loss_vert = F.average(F.relu(F.sqrt(distance2) - r[v] + margin))
+        chainer.report({'loss_vert': loss_vert}, self.coords)
+        loss += loss_vert * self.args.lambda_vert
+
+        #anchor should be near center
+        # if self.args.lambda_spring > 0:
+        
+        distance2 = F.sum((c[v]-x[v])**2,axis=1) + epsilon
+        loss_spring = F.average(F.sqrt(distance2))
+        chainer.report({'loss_spring': loss_spring}, self.coords)
+        loss += loss_spring * self.args.lambda_spring
+
         # radius should be similar
         if self.args.lambda_uniform_radius>0:
             loss_uniform_radius = F.average( (F.max(r)-F.min(r))**2 )
@@ -106,19 +114,30 @@ class Updater(chainer.training.StandardUpdater):
 
         # coulomb force between points
         if self.args.lambda_coulomb>0:
-            #print(len(r))
+            #(1-1)点の並び替え
             # p = np.random.permutation(len(r))
-            # p = np.array(list(combinations(set(v),2))) #batch数分の頂点の全組み合わせ
-            p = np.array(set(combinations(range(len(r)),2))) #全頂点の全組み合わせ
-            a,b = p[1:], p[:-1]
-            distance_ab = F.sqrt(F.sum((c[a]-x[b])**2,axis=1) + epsilon)
-            distance_ba = F.sqrt(F.sum((c[b]-x[a])**2,axis=1) + epsilon)
-            loss_coulomb = F.average(F.relu(r[a] - distance_ab + margin)) \
-                     + F.average(F.relu(r[b] - distance_ba + margin))
-            # distance = F.sqrt(F.sum((c[a]-c[b])**2,axis=1)+epsilon)
-            # loss_coulomb = F.average(F.relu(r[a] + r[b] - distance + margin))
+            # a,b = p[1:], p[:-1]
+
+            #(1-2)batch数分の頂点の全組み合わせ
+            p = np.array(list(combinations(set(v),2)))
+            a,b = p[:,0], p[:,1]
+
+            #(1-3)全頂点の全組み合わせ
+            # p = np.array(list(combinations(range(len(r)),2)))
+            # a,b = p[:,0], p[:,1]
+
+            #(2-1)positiveと逆向きのLossを加える場合
+            # distance_ab = F.sqrt(F.sum((c[a]-x[b])**2,axis=1) + epsilon)
+            # distance_ba = F.sqrt(F.sum((c[b]-x[a])**2,axis=1) + epsilon)
+            # loss_coulomb = F.average(F.relu(r[a] - distance_ab + margin)) \
+            #          + F.average(F.relu(r[b] - distance_ba + margin))
+
+            #(2-2)円盤が重ならないようにする場合
+            distance = F.sqrt(F.sum((c[a]-c[b])**2,axis=1)+epsilon)
+            loss_coulomb = F.average(F.relu(r[a] + r[b] - distance + margin))
             chainer.report({'loss_coulomb': loss_coulomb}, self.coords)
             loss += self.args.lambda_coulomb * loss_coulomb
+
         # update
         self.coords.cleargrads()
         loss.backward()
@@ -200,7 +219,7 @@ def read_graph(fname):
                 vert.add(l[i+1])
     print("#edges {}, #vertices {}".format(len(edge),len(vert)))
     neg_edge = set(product(vert,vert)) - edge
-    
+
     return len(vert), list(vert), list(edge), list(neg_edge)
 
 def plot_all(disks, fname):
@@ -256,6 +275,8 @@ def main():
                         help='Radius should be similar')
     parser.add_argument('--lambda_vert', '-lv', type=float, default=0.5,
                         help='anchor should be in its corresponding disk')
+    parser.add_argument('--lambda_spring', '-ls', type=float, default=0,
+                        help='anchor should be close to its corresponding center')
     parser.add_argument('--outdir', '-o', default='../result',
                         help='Directory to output the result')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam',
@@ -339,7 +360,7 @@ def main():
 
     if primary:
         log_interval = 100, 'iteration'
-        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg', 'main/loss_vert', 'main/loss_coulomb']
+        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg', 'main/loss_coulomb', 'main/loss_vert', 'main/loss_spring']
         trainer.extend(extensions.observe_lr('main'), trigger=log_interval)
         trainer.extend(extensions.LogReport(keys=log_keys, trigger=log_interval))
         trainer.extend(extensions.PrintReport(log_keys), trigger=log_interval)
