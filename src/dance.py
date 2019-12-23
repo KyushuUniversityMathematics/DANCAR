@@ -88,7 +88,7 @@ class Updater(chainer.training.StandardUpdater):
 
         #anchor should be near center
         # if self.args.lambda_spring > 0:
-        
+
         distance2 = F.sum((c[v]-x[v])**2,axis=1) + epsilon
         loss_spring = F.average(F.sqrt(distance2))
         chainer.report({'loss_spring': loss_spring}, self.coords)
@@ -119,12 +119,19 @@ class Updater(chainer.training.StandardUpdater):
             # a,b = p[1:], p[:-1]
 
             #(1-2)batch数分の頂点の全組み合わせ
-            p = np.array(list(combinations(set(v),2)))
-            a,b = p[:,0], p[:,1]
+            # p = np.array(list(combinations(set(v),2)))
+            # a,b = p[:,0], p[:,1]
 
             #(1-3)全頂点の全組み合わせ
             # p = np.array(list(combinations(range(len(r)),2)))
             # a,b = p[:,0], p[:,1]
+
+            # TODO: 別のbatchを作成する
+            #(1-4)別のiteratorを用意して(1-2)と同じことを行う
+            batch = self.get_iterator('coulomb').next()
+            v = self.converter(batch) #vertex a
+            p = np.array(list(combinations(set(v),2)))
+            a,b = p[:,0], p[:,1]
 
             #(2-1)positiveと逆向きのLossを加える場合
             # distance_ab = F.sqrt(F.sum((c[a]-x[b])**2,axis=1) + epsilon)
@@ -161,7 +168,8 @@ class Evaluator(extensions.Evaluator):
             dat = coords.W.data.copy()
         dat[:,0] = np.maximum(dat[:,0],0)+0.1
         np.savetxt(os.path.join(self.args.outdir,"out{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
-        plot_all(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
+        if self.args.visualize:
+            plot_all(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
         reconstruct_graph(dat,os.path.join(self.args.outdir,"reconstruct{:0>4}.csv".format(self.count)))
         self.count += 1
         return {"myval/none":0}
@@ -185,7 +193,7 @@ def reconstruct_graph(disks, fname):
 
     f = open(fname, "w")
     for i,j in sorted(edges):
-        print(f"{i},{j}",file=f)        
+        print(f"{i},{j}",file=f)
 
 # # plot results
 # def plot_all(disks,fname):
@@ -207,7 +215,7 @@ def reconstruct_graph(disks, fname):
 #     plt.close()
 
 # read graph from csv
-def read_graph(fname):
+def read_graph(fname, use_negative_sample):
     vert = set()
     edge = set()
     with open(fname) as infh:
@@ -218,8 +226,10 @@ def read_graph(fname):
                 edge.add((l[i],l[i+1]))
                 vert.add(l[i+1])
     print("#edges {}, #vertices {}".format(len(edge),len(vert)))
-    neg_edge = set(product(vert,vert)) - edge
-
+    if use_negative_sample:
+        neg_edge = set(product(vert,vert)) - edge
+    else:
+        neg_edge = set()
     return len(vert), list(vert), list(edge), list(neg_edge)
 
 def plot_all(disks, fname):
@@ -248,6 +258,8 @@ def main():
     parser = argparse.ArgumentParser(description='Disk Embedding')
     parser.add_argument('input', help='Path to DAG description file',default="split.csv")
     parser.add_argument('--batchsize', '-bs', type=int, default=1,
+                        help='Number of samples in each mini-batch')
+    parser.add_argument('--batchsize_coulomb', '-bc', type=int, default=None,
                         help='Number of samples in each mini-batch')
     parser.add_argument('--epoch', '-e', type=int, default=100,
                         help='Number of sweeps over the dataset to train')
@@ -283,6 +295,8 @@ def main():
                         help='optimizer')
     parser.add_argument('--vis_freq', '-vf', type=int, default=200,
                         help='visualisation frequency in iteration')
+    parser.add_argument('--visualize', '-vis', action='store_false',
+                        help='visualization flag')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
     args = parser.parse_args()
 
@@ -290,6 +304,9 @@ def main():
     save_args(args, args.outdir)
 
     chainer.config.autotune = True
+
+    if args.batchsize_coulomb == None:
+        args.batchsize_coulomb = args.batchsize
 
     ## ChainerMN
     if args.mpi:
@@ -312,12 +329,17 @@ def main():
         chainer.print_runtime_info()
         if args.gpu >= 0:
             chainer.cuda.get_device(args.gpu).use()
-    
-    vnum, vert, pos_edge, neg_edge = read_graph(args.input)
-    print(pos_edge)
+
+    use_negative_sample = (args.lambda_neg > 0)
+    vnum, vert, pos_edge, neg_edge = read_graph(args.input, use_negative_sample)
+    # print(pos_edge)
     vert_train_iter = iterators.SerialIterator(Dataset_vert(vert), args.batchsize, shuffle=True)
     train_iter = iterators.SerialIterator(Dataset_edge(pos_edge), args.batchsize, shuffle=True)
-    neg_train_iter = iterators.SerialIterator(Dataset_edge(neg_edge), args.batchsize, shuffle=True)
+    if use_negative_sample:
+        neg_train_iter = iterators.SerialIterator(Dataset_edge(neg_edge), args.batchsize, shuffle=True)
+    else:
+        neg_train_iter = iterators.SerialIterator(Dataset_edge(vert), args.batchsize, shuffle=True)
+    coulomb_train_iter = iterators.SerialIterator(Dataset_vert(vert), args.batchsize_coulomb, shuffle=True)
     # super_neg_train_iter = iterators.SerialIterator(Dataset_edge(super_neg_edge), args.batchsize, shuffle=True)
     # initial embedding [1,2]^(dim+1),  the first coordinate corresponds to r (radius)
     coords = np.random.rand(vnum,args.dim*2+1)+1
@@ -350,7 +372,7 @@ def main():
 
     updater = Updater(
         models=coords,
-        iterator={'vertex':vert_train_iter, 'main': train_iter, 'negative': neg_train_iter},
+        iterator={'vertex':vert_train_iter, 'main': train_iter, 'negative': neg_train_iter, 'coulomb':coulomb_train_iter},
         optimizer={'main': opt},
         device=args.gpu,
 #        converter=convert.ConcatWithAsyncTransfer(),
