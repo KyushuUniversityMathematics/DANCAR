@@ -1,4 +1,4 @@
-Disk Embedding of DAG
+Embedding of directed graphs
 =============
 
 ## Requirements
@@ -13,17 +13,32 @@ e.g.
 0,1,2,3,4
 3,5,6
 ```
-A line corresponds to a chain denoted by a sequence of vertex indices.
+Each line corresponds to a chain denoted by a sequence of vertex indices.
 Vertex ID should be integer from 0 to n-1
 
-- command line options
+- to see command line options
 ```
-python diskEmbedding.py -h
+python dgEmbedding.py -h
 ```
 
-- Parallel learning
+- toy examples
+
+The following creates the "result" directory.
+
+Disk embedding
 ```
-    mpiexec -n 4 python diskEmbedding.py dag.csv --mpi
+    python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -la 0 -ln 1 --dag 1
+```
+
+DANCAR embedding
+```
+    python dgEmbedding.py example/circle.csv -e 100 -be 3 -bv 3 -la 1 -ln 3 --dag 0
+```
+
+
+- Parallel learning using MPI
+```
+    mpiexec -n 4 python dgEmbedding.py example/circle.csv --mpi
 ```
 
 - Random sample generation
