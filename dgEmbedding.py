@@ -44,7 +44,7 @@ class Updater(chainer.training.StandardUpdater):
 
         # anchor loss
         if self.args.lambda_anchor > 0: # DANCAR
-            loss_anc = F.sum(F.relu(F.sqrt(F.sum((c[v]-x[v])**2,axis=1) + epsilon) - r[v] + self.args.margin))
+            loss_anc = F.average(F.relu(F.sqrt(F.sum((c[v]-x[v])**2,axis=1) + epsilon) - r[v] + self.args.margin))
             chainer.report({'loss_anc': loss_anc}, self.coords)
             loss += self.args.lambda_anchor * loss_anc
         else:
