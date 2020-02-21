@@ -33,6 +33,10 @@ class Updater(chainer.training.StandardUpdater):
         self.args = params['args']
         
     def update_core(self):
+        # TODO: 
+        # log parametrisation of radius?
+        # L2 norm for distance?
+
         epsilon = 1e-10
         opt = self.get_optimizer('main')
         r = F.relu(self.coords.W[:,0])
@@ -70,7 +74,7 @@ class Updater(chainer.training.StandardUpdater):
         # if self.args.lambda_super_neg>0:
         #     batch = self.get_iterator('super_neg').next()
         #     a,b = self.converter(batch)
-        #     d = F.sqrt(F.sum((self.coords.W[a,1:]-self.coords.W[b,1:])**2,axis=1)+epsilon)
+        #     d = F.sqrt(F.sum((x[a]-x[b])**2,axis=1)+epsilon)
         #     loss_super_neg = F.average(F.relu(-d + self.args.margin + r[b] + r[a]))
         #     chainer.report({'loss_super_neg': loss_super_neg}, self.coords)
         #     loss += self.args.lambda_super_neg * loss_super_neg
@@ -98,21 +102,36 @@ class Evaluator(extensions.Evaluator):
         self.count = 0
     def evaluate(self):
         coords = self.get_target('main')
-        if self.args.lambda_anchor == 0:
-            coords.W.array[:,(self.args.dim+1):] = coords.W.array[:,1:(self.args.dim+1)]
         if self.eval_hook:
             self.eval_hook(self)
+        if self.args.lambda_anchor == 0:
+            coords.W.array[:,(self.args.dim+1):] = coords.W.array[:,1:(self.args.dim+1)]
         if(self.args.gpu>-1):
             dat = coords.xp.asnumpy(coords.W.data).copy()
         else:
             dat = coords.W.data.copy()
+        if self.args.reconstruct:
+            r = dat[:,0]
+            x = dat[:,1:(self.args.dim+1)]
+            c = dat[:,(self.args.dim+1):]
+            rg = reconstruct(r,x,c)
+            np.savetxt(os.path.join(self.args.outdir,"graph{:0>4}.csv".format(self.count)),rg,fmt='%i')
         # transform radius
-        dat[:,0] = np.maximum(dat[:,0],0)+0.1
-        np.savetxt(os.path.join(self.args.outdir,"out{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
+#        dat[:,0] = np.maximum(dat[:,0],0)+0.1
+        np.savetxt(os.path.join(self.args.outdir,"coords{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
         plot_all(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
         self.count += 1
         return {"myval/none":0}
 
+# reconstruct digraph from arrangements
+def reconstruct(r,x,c):
+    G = []
+    dm = np.sum((np.expand_dims(x,axis=0) - np.expand_dims(c,axis=1))**2,axis=2)
+    dm += np.max(r)*np.eye(len(dm))
+    for i in range(len(dm)):
+        E = [(i,j) for j in np.where(dm[i]<r[i])[0]]
+        G.extend(E)
+    return(np.array(G,dtype=np.int32))
 
 # plot results (works only with dim=2)
 def plot_all(disks,fname):
@@ -222,6 +241,7 @@ def main():
     parser.add_argument('--vis_freq', '-vf', type=int, default=2000,
                         help='visualisation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
+    parser.add_argument('--reconstruct', '-r', action='store_true',help='reconstruct graph')
     args = parser.parse_args()
 
     args.outdir = os.path.join(args.outdir, dt.now().strftime('%m%d_%H%M'))
@@ -315,8 +335,9 @@ def main():
         trainer.extend(Evaluator(edge_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
         trainer.extend(Evaluator(edge_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.epoch, 'epoch'))
         trainer.extend(extensions.ParameterStatistics(coords))
-        # copy input DAG data file
-        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
+        # save DAG data file
+        np.savetxt(os.path.join(args.outdir,os.path.basename(args.input)),pos_edge,fmt='%i')
+#        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
         # ChainerUI
         save_args(args, args.outdir)
 
