@@ -111,20 +111,21 @@ class Evaluator(extensions.Evaluator):
         else:
             dat = coords.W.data.copy()
         if self.args.reconstruct:
-            r = dat[:,0]
-            x = dat[:,1:(self.args.dim+1)]
-            c = dat[:,(self.args.dim+1):]
-            rg = reconstruct(r,x,c)
-            np.savetxt(os.path.join(self.args.outdir,"graph{:0>4}.csv".format(self.count)),rg,fmt='%i')
+            rg = reconstruct(dat)
+            np.savetxt(os.path.join(self.args.outdir,"reconstructed{:0>4}.csv".format(self.count)),rg,fmt='%i',delimiter=",")
         # transform radius
 #        dat[:,0] = np.maximum(dat[:,0],0)+0.1
         np.savetxt(os.path.join(self.args.outdir,"coords{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
-        plot_all(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
+        plot_disks(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
         self.count += 1
         return {"myval/none":0}
 
 # reconstruct digraph from arrangements
-def reconstruct(r,x,c):
+def reconstruct(disks):
+    dim = (disks.shape[1]-1)//2
+    r = disks[:,0]
+    x = disks[:,1:(dim+1)]
+    c = disks[:,(dim+1):]
     G = []
     dm = np.sum((np.expand_dims(x,axis=0) - np.expand_dims(c,axis=1))**2,axis=2)
     dm += np.max(r)*np.eye(len(dm))
@@ -133,8 +134,16 @@ def reconstruct(r,x,c):
         G.extend(E)
     return(np.array(G,dtype=np.int32))
 
+def plot_digraph(edge,fname):
+    G = nx.DiGraph()
+    G.add_edges_from(edge)
+    plt.figure(figsize=(15,15))
+    pos = nx.fruchterman_reingold_layout(G)
+    nx.draw_networkx(G,pos,node_color="#5050ff",font_size=0,node_size=75)
+    plt.savefig(fname)
+
 # plot results (works only with dim=2)
-def plot_all(disks,fname):
+def plot_disks(disks,fname):
     fig = plt.figure()
     ax = plt.axes()
     cmap = plt.get_cmap("Dark2")
@@ -201,8 +210,9 @@ def read_graph(fname):
 ## main
 def main():
     # command line argument parsing
-    parser = argparse.ArgumentParser(description='Disk Embedding')
-    parser.add_argument('input', help='Path to DAG description file',default="split.csv")
+    parser = argparse.ArgumentParser(description='Digraph Embedding')
+    parser.add_argument('input', help='Path to digraph description file')
+    parser.add_argument('--coordinates', '-c', help='Path to coordinate file for initialization')
     parser.add_argument('--batchsize_edge', '-be', type=int, default=100,
                         help='Number of samples in each edge mini-batch')
     parser.add_argument('--batchsize_vert', '-bv', type=int, default=10,
@@ -242,6 +252,7 @@ def main():
                         help='visualisation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
     parser.add_argument('--reconstruct', '-r', action='store_true',help='reconstruct graph')
+    parser.add_argument('--training', '-t', action='store_false',help='reconstruct graph')
     args = parser.parse_args()
 
     args.outdir = os.path.join(args.outdir, dt.now().strftime('%m%d_%H%M'))
@@ -279,14 +290,17 @@ def main():
 #    neg_train_iter = iterators.SerialIterator(Dataset(neg_edge), args.batchsize, shuffle=True)
 #    super_neg_train_iter = iterators.SerialIterator(Dataset(super_neg_edge), args.batchsize, shuffle=True)
 
-    # initial embedding [-1,1]^(dim)
-    coords = np.zeros( (vnum,1+2*args.dim) )
-    # anchor = centre
-    X = 2*np.random.rand(vnum,args.dim)-1
-    coords[:,1:args.dim+1] = X
-    coords[:,args.dim+1:] = X
-    # the first coordinate corresponds to the radius r=0.1
-    coords[:,0] = 0.1
+    # initial embedding
+    if args.coordinates:
+        coords = np.loadtxt(args.coordinates,delimiter=",")
+    else:
+        coords = np.zeros( (vnum,1+2*args.dim) )
+        # anchor = centre
+        X = 2*np.random.rand(vnum,args.dim)-1
+        coords[:,1:args.dim+1] = X
+        coords[:,args.dim+1:] = X
+        # the first coordinate corresponds to the radius r=0.1
+        coords[:,0] = 0.1
     coords = L.Parameter(coords)
     
     # Set up an optimizer
@@ -333,10 +347,8 @@ def main():
         trainer.extend(extensions.ProgressBar(update_interval=10))
         trainer.extend(extensions.LogReport(trigger=log_interval))
         trainer.extend(Evaluator(edge_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
-        trainer.extend(Evaluator(edge_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.epoch, 'epoch'))
         trainer.extend(extensions.ParameterStatistics(coords))
-        # save DAG data file
-        np.savetxt(os.path.join(args.outdir,os.path.basename(args.input)),pos_edge,fmt='%i')
+
 #        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
         # ChainerUI
         save_args(args, args.outdir)
@@ -346,7 +358,24 @@ def main():
     elif args.optimizer in ['Adam','AdaBound','Eve']:
         trainer.extend(extensions.ExponentialShift("alpha", 0.5, optimizer=opt), trigger=(args.epoch/args.learning_rate_drop, 'epoch'))
 
-    trainer.run()
+    if args.training:
+        trainer.run()
+
+    if primary:
+        # save DAG data file
+        if(args.gpu>-1):
+            dat = coords.xp.asnumpy(coords.W.data)
+        else:
+            dat = coords.W.data
+        if args.lambda_anchor == 0:
+            dat[:,(args.dim+1):] = dat[:,1:(args.dim+1)]
+        redge = reconstruct(dat)
+        np.savetxt(os.path.join(args.outdir,"original.csv"),pos_edge,fmt='%i',delimiter=",")
+        np.savetxt(os.path.join(args.outdir,"reconstructed.csv"),redge,fmt='%i',delimiter=",")
+        plot_digraph(pos_edge,os.path.join(args.outdir,"original.jpg"))
+        plot_digraph(redge,os.path.join(args.outdir,"reconstructed.jpg"))
+        np.savetxt(os.path.join(args.outdir,"coords.csv"), dat, fmt='%1.5f', delimiter=",")
+        plot_disks(dat,os.path.join(args.outdir,"plot.png"))
 
 if __name__ == '__main__':
     main()
