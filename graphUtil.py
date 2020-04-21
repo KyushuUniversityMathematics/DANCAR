@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 import numpy as np
 
 # read graph from csv
-def read_graph(fname):
+def read_graph(fname,offset=0):
     vert = set()
     edge = set()
     with open(fname) as infh:
@@ -17,14 +17,9 @@ def read_graph(fname):
             for i in range(len(l)-1):
                 edge.add((l[i],l[i+1]))
                 vert.add(l[i+1])
-    return(np.array(list(vert),dtype=np.int32),np.array(list(edge),dtype=np.int32))
-
-def np2nx(edges):
-    g = nx.DiGraph()
-    for l in edges:
-        g.add_edge(l[0],l[1])
-#    print("#edges {}, #vertices {}".format(g.number_of_edges(),g.number_of_nodes()))
-    return g
+    vlist = np.array(list(vert),dtype=np.int32)
+    elist = np.array(list(edge),dtype=np.int32)
+    return(vlist-offset,elist-offset)
 
 def plot_digraph(edge,fname):
     G = nx.DiGraph()
@@ -123,4 +118,4 @@ if __name__ == "__main__":
     """
     usage : compare_graph.py original_graph.csv reconstructed_graph.csv
     """
-    compare_graph(np2nx(read_graph(argv[1])[1]),np2nx(read_graph(argv[2])[1]))
+    compare_graph(nx.from_edgelist(read_graph(argv[1])[1]),nx.from_edgelist(read_graph(argv[2])[1]))

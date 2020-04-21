@@ -62,9 +62,14 @@ class Updater(chainer.training.StandardUpdater):
 
         # negative sample: we randomly pick vertices so it may contain edges
         if self.args.lambda_neg>0:
-            vn = np.roll(v,1)
-            d = F.sqrt(F.sum((c[v]-x[vn])**2,axis=1)+epsilon)
-            rdiff = self.args.dag * r[vn] - r[v]
+            if self.args.batchsize_negative>0: 
+                na,nb = self.converter(self.get_iterator('negative').next()) # sample from non-edge            
+            else:  # random vertex pairs
+                na = v
+                nb = np.roll(v,1)
+
+            d = F.sqrt(F.sum((c[na]-x[nb])**2,axis=1)+epsilon)
+            rdiff = self.args.dag * r[nb] - r[na]
             loss_neg = F.average(F.relu(-d + self.args.margin - rdiff))
             chainer.report({'loss_neg': loss_neg}, self.coords)
             loss += self.args.lambda_neg * loss_neg
@@ -128,8 +133,11 @@ def main():
     parser.add_argument('--coordinates', '-c', help='Path to coordinate file for initialization')
     parser.add_argument('--batchsize_edge', '-be', type=int, default=100,
                         help='Number of samples in each edge mini-batch')
-    parser.add_argument('--batchsize_vert', '-bv', type=int, default=1000,
+    parser.add_argument('--batchsize_vert', '-bv', type=int, default=100,
                         help='Number of samples in each vertex mini-batch')
+    parser.add_argument('--batchsize_negative', '-bn', type=int, default=100,
+                        help='Number of samples in each negative edge mini-batch')
+    parser.add_argument('--vertex_offset', type=int, default=0, help='the smallest index of vertices')
     parser.add_argument('--epoch', '-e', type=int, default=100,
                         help='Number of sweeps over the dataset to train')
     parser.add_argument('--gpu', '-g', type=int, default=-1,
@@ -154,7 +162,7 @@ def main():
     parser.add_argument('--lambda_neg', '-ln', type=float, default=1,
                         help='points stay apart')
     parser.add_argument('--lambda_anchor', '-la', type=float, default=0,
-                        help='anchor should reside in the disk. set 0 for DiskEmbedding')
+                        help='anchor should reside in the disk. if set to 0, anchors are fixed to the centre of the spheres')
     parser.add_argument('--lambda_uniform_radius', '-lur', type=float, default=0,
                         help='Radius should be similar')
     parser.add_argument('--outdir', '-o', default='result',
@@ -171,10 +179,9 @@ def main():
 
     args.outdir = os.path.join(args.outdir, dt.now().strftime('%m%d_%H%M'))
     save_args(args, args.outdir)
-
     chainer.config.autotune = True
 
-    vert,pos_edge=read_graph(args.input)
+    vert,pos_edge=read_graph(args.input,args.vertex_offset)
     vnum = np.max(vert)+1
 
     ## ChainerMN
@@ -201,10 +208,13 @@ def main():
         if args.gpu >= 0:
             chainer.cuda.get_device(args.gpu).use()
     
-    edge_iter = iterators.SerialIterator(datasets.TupleDataset( pos_edge[:,0],pos_edge[:,1] ), args.batchsize_edge, shuffle=True)
+    edge_iter = iterators.SerialIterator(datasets.TupleDataset(pos_edge[:,0],pos_edge[:,1]), args.batchsize_edge, shuffle=True)
     vert_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_vert, shuffle=True)
-#    neg_train_iter = iterators.SerialIterator(Dataset(neg_edge), args.batchsize, shuffle=True)
-#    super_neg_train_iter = iterators.SerialIterator(Dataset(super_neg_edge), args.batchsize, shuffle=True)
+    if args.batchsize_negative > 0:
+        neg_edge = np.array((nx.complement(nx.from_edgelist(pos_edge))).edges())
+        neg_iter = iterators.SerialIterator(datasets.TupleDataset(neg_edge[:,0],neg_edge[:,1]), args.batchsize_negative, shuffle=True)
+    else:
+        neg_iter = iterators.SerialIterator(datasets.TupleDataset([[0]]),1) # dummy
 
     # initial embedding
     if args.coordinates:
@@ -244,7 +254,7 @@ def main():
 
     updater = Updater(
         models=coords,
-        iterator={'main': edge_iter, 'vertex': vert_iter},  
+        iterator={'main': edge_iter, 'vertex': vert_iter, 'negative': neg_iter},  
         optimizer={'main': opt},
         device=args.gpu,
 #        converter=convert.ConcatWithAsyncTransfer(),
@@ -289,8 +299,7 @@ def main():
         np.savetxt(os.path.join(args.outdir,"original.csv"),pos_edge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"reconstructed.csv"),redge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"coords.csv"), dat, fmt='%1.5f', delimiter=",")
-        compare_graph(np2nx(pos_edge),np2nx(redge))
-
+        compare_graph(nx.from_edgelist(pos_edge),nx.from_edgelist(redge))
         if args.plot:
             plot_digraph(pos_edge,os.path.join(args.outdir,"original.jpg"))
             plot_digraph(redge,os.path.join(args.outdir,"reconstructed.jpg"))
