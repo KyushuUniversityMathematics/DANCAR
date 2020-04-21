@@ -38,9 +38,9 @@ class Updater(chainer.training.StandardUpdater):
 
         epsilon = 1e-10
         opt = self.get_optimizer('main')
-        r = F.relu(self.coords.W[:,0])
-        x = self.coords.W[:,1:(self.args.dim+1)]
-        c = self.coords.W[:,(self.args.dim+1):]
+        r = F.relu(self.coords.W[:,0]) # radius
+        x = self.coords.W[:,1:(self.args.dim+1)] # anchor
+        c = self.coords.W[:,(self.args.dim+1):] # sphere centre
         v, = self.converter(self.get_iterator('vertex').next())
         a,b = self.converter(self.get_iterator('main').next()) # edge
         loss = 0
@@ -51,7 +51,7 @@ class Updater(chainer.training.StandardUpdater):
             chainer.report({'loss_anc': loss_anc}, self.coords)
             loss += self.args.lambda_anchor * loss_anc
         else:
-            c = x
+            x = c
             
         # positive sample: a contains b
         if self.args.lambda_pos > 0:
@@ -67,21 +67,11 @@ class Updater(chainer.training.StandardUpdater):
             else:  # random vertex pairs
                 na = v
                 nb = np.roll(v,1)
-
             d = F.sqrt(F.sum((c[na]-x[nb])**2,axis=1)+epsilon)
             rdiff = self.args.dag * r[nb] - r[na]
             loss_neg = F.average(F.relu(-d + self.args.margin - rdiff))
             chainer.report({'loss_neg': loss_neg}, self.coords)
             loss += self.args.lambda_neg * loss_neg
-
-        # # super negative sample
-        # if self.args.lambda_super_neg>0:
-        #     batch = self.get_iterator('super_neg').next()
-        #     a,b = self.converter(batch)
-        #     d = F.sqrt(F.sum((x[a]-x[b])**2,axis=1)+epsilon)
-        #     loss_super_neg = F.average(F.relu(-d + self.args.margin + r[b] + r[a]))
-        #     chainer.report({'loss_super_neg': loss_super_neg}, self.coords)
-        #     loss += self.args.lambda_super_neg * loss_super_neg
         
         # radius should be similar
         if self.args.lambda_uniform_radius>0:            
@@ -108,8 +98,8 @@ class Evaluator(extensions.Evaluator):
         coords = self.get_target('main')
         if self.eval_hook:
             self.eval_hook(self)
-        if self.args.lambda_anchor == 0:
-            coords.W.array[:,(self.args.dim+1):] = coords.W.array[:,1:(self.args.dim+1)]
+        if self.args.lambda_anchor == 0: # ancho = centre
+            coords.W.array[:,1:(self.args.dim+1)] = coords.W.array[:,(self.args.dim+1):]
         if(self.args.gpu>-1):
             dat = coords.xp.asnumpy(coords.W.data).copy()
         else:
@@ -123,7 +113,25 @@ class Evaluator(extensions.Evaluator):
         if self.args.plot:
             plot_disks(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
         self.count += 1
-        return {"myval/none":0}
+
+        # loss eval
+        if self.args.evaluate:
+            epsilon = 1e-10
+            # pos
+            a,b = self.converter(self.get_iterator('main').next()) # edge
+            r = F.relu(coords.W[:,0]) # radius
+            x = coords.W[:,1:(self.args.dim+1)] # anchor
+            c = coords.W[:,(self.args.dim+1):] # sphere centre
+            d = F.sqrt(F.sum((c[a]-x[b])**2,axis=1)+epsilon)
+            loss_pos = F.average(F.relu(d + self.args.dag * r[b] - r[a]))
+            # neg
+            na,nb = self.converter(self.get_iterator('negative').next()) # sample from non-edge            
+            d = F.sqrt(F.sum((c[na]-x[nb])**2,axis=1)+epsilon)
+            rdiff = self.args.dag * r[nb] - r[na]
+            loss_neg = F.average(F.relu(-d - rdiff))
+            return {"myval/pos":loss_pos,"myval/neg":loss_neg}
+        else:
+            return {"myval/none": 0}
 
 ## main
 def main():
@@ -145,7 +153,7 @@ def main():
     parser.add_argument('--dim', '-d', type=int, default=2,
                         help='Embedding dimension')
     parser.add_argument('--dag', type=float, default=0, help='0:non-acyclic, 1:acyclic')
-    parser.add_argument('--margin', '-m', type=float, default=0.3,
+    parser.add_argument('--margin', '-m', type=float, default=0.1,
                         help='margin for the metric boundary')
     parser.add_argument('--weight_decay', '-wd', type=float, default=0,
                         help='weight decay for regularization on coordinates')
@@ -161,7 +169,7 @@ def main():
                         help='edges force containment')
     parser.add_argument('--lambda_neg', '-ln', type=float, default=1,
                         help='points stay apart')
-    parser.add_argument('--lambda_anchor', '-la', type=float, default=0,
+    parser.add_argument('--lambda_anchor', '-la', type=float, default=1,
                         help='anchor should reside in the disk. if set to 0, anchors are fixed to the centre of the spheres')
     parser.add_argument('--lambda_uniform_radius', '-lur', type=float, default=0,
                         help='Radius should be similar')
@@ -172,6 +180,7 @@ def main():
     parser.add_argument('--vis_freq', '-vf', type=int, default=2000,
                         help='visualisation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
+    parser.add_argument('--evaluate', '-ev', action='store_true',help='evaluate loss')
     parser.add_argument('--reconstruct', '-r', action='store_true',help='reconstruct graph')
     parser.add_argument('--plot', '-p', action='store_true',help='plot result')
     parser.add_argument('--training', '-t', action='store_false',help='reconstruct graph')
@@ -209,10 +218,12 @@ def main():
             chainer.cuda.get_device(args.gpu).use()
     
     edge_iter = iterators.SerialIterator(datasets.TupleDataset(pos_edge[:,0],pos_edge[:,1]), args.batchsize_edge, shuffle=True)
+    edge_test_iter = iterators.SerialIterator(datasets.TupleDataset(pos_edge[:,0],pos_edge[:,1]), len(pos_edge), shuffle=False)
     vert_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_vert, shuffle=True)
     if args.batchsize_negative > 0:
-        neg_edge = np.array((nx.complement(nx.from_edgelist(pos_edge))).edges())
+        neg_edge = np.array((nx.complement(nx.from_edgelist(pos_edge,nx.DiGraph()))).edges())
         neg_iter = iterators.SerialIterator(datasets.TupleDataset(neg_edge[:,0],neg_edge[:,1]), args.batchsize_negative, shuffle=True)
+        neg_test_iter = iterators.SerialIterator(datasets.TupleDataset(neg_edge[:,0],neg_edge[:,1]), len(neg_edge), shuffle=False)
     else:
         neg_iter = iterators.SerialIterator(datasets.TupleDataset([[0]]),1) # dummy
 
@@ -264,7 +275,11 @@ def main():
 
     if primary:
         log_interval = 100, 'iteration'
-        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg','main/loss_anc','main/loss_rad'] # 'main/loss_super_neg',
+        log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg','main/loss_anc']
+        if args.evaluate:
+            log_keys.extend(['myval/pos','myval/neg'])
+        if args.lambda_uniform_radius>0:
+            log_keys.append('main/loss_rad')
         trainer.extend(extensions.observe_lr('main'), trigger=log_interval)
         trainer.extend(extensions.LogReport(keys=log_keys, trigger=log_interval))
         trainer.extend(extensions.PrintReport(log_keys), trigger=log_interval)
@@ -272,7 +287,8 @@ def main():
             trainer.extend(extensions.PlotReport(log_keys[3:], 'epoch', file_name='loss.png'))
         trainer.extend(extensions.ProgressBar(update_interval=10))
         trainer.extend(extensions.LogReport(trigger=log_interval))
-        trainer.extend(Evaluator(edge_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
+
+        trainer.extend(Evaluator({'main': edge_test_iter, 'negative': neg_test_iter}, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
 #        trainer.extend(extensions.ParameterStatistics(coords))
 
 #        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
@@ -293,13 +309,13 @@ def main():
             dat = coords.xp.asnumpy(coords.W.data)
         else:
             dat = coords.W.data
-        if args.lambda_anchor == 0:
-            dat[:,(args.dim+1):] = dat[:,1:(args.dim+1)]
+        if args.lambda_anchor == 0: # anchor = centre
+            dat[:,1:(args.dim+1)] = dat[:,(args.dim+1):]
         redge = reconstruct(dat)
         np.savetxt(os.path.join(args.outdir,"original.csv"),pos_edge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"reconstructed.csv"),redge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"coords.csv"), dat, fmt='%1.5f', delimiter=",")
-        compare_graph(nx.from_edgelist(pos_edge),nx.from_edgelist(redge))
+        compare_graph(nx.from_edgelist(pos_edge,nx.DiGraph()),nx.from_edgelist(redge,nx.DiGraph()))
         if args.plot:
             plot_digraph(pos_edge,os.path.join(args.outdir,"original.jpg"))
             plot_digraph(redge,os.path.join(args.outdir,"reconstructed.jpg"))

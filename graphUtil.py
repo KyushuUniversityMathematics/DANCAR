@@ -37,14 +37,15 @@ def plot_disks(disks,fname):
     dim = (disks.shape[1]-1)//2
     min_r = np.min(disks[:,0])
     for i,v in enumerate(disks):
-        c = patches.Circle(xy=(v[1], v[2]), radius=v[0], fc=cmap(int(i%10)),alpha=0.4)
+        # disk
+        c = patches.Circle(xy=(v[1+dim], v[2+dim]), radius=v[0], fc=cmap(int(i%10)),alpha=0.4)
         ax.add_patch(c)
-        ax.text(v[1+dim], v[2+dim], i, size = 20, color = cmap(int(i%10)))
-        # boundary
-        c = patches.Circle(xy=(v[1], v[2]), radius=v[0], ec='black', fill=False)
+        ax.text(v[1], v[2], i, size = 20, color = cmap(int(i%10)))
+        # disk boundary
+        c = patches.Circle(xy=(v[1+dim], v[2+dim]), radius=v[0], ec='black', fill=False)
         ax.add_patch(c)
         # anchor
-        c = patches.Circle(xy=(v[1+dim], v[2+dim]), radius=min_r/100, ec='black', fill=True)
+        c = patches.Circle(xy=(v[1], v[2]), radius=min_r/100, ec='black', fill=True)
         ax.add_patch(c)
     plt.axis('scaled')
     ax.set_aspect('equal')
@@ -54,14 +55,14 @@ def plot_disks(disks,fname):
 # reconstruct digraph from arrangements
 def reconstruct(disks):
     dim = (disks.shape[1]-1)//2
-    r = disks[:,0]
+    r2 = disks[:,0]**2
     x = disks[:,1:(dim+1)]
     c = disks[:,(dim+1):]
     G = []
     dm = np.sum((np.expand_dims(x,axis=0) - np.expand_dims(c,axis=1))**2,axis=2)
-    dm += np.max(r)*np.eye(len(dm))
+    dm += np.max(r2)*np.eye(len(dm))
     for i in range(len(dm)):
-        E = [(i,j) for j in np.where(dm[i]<r[i])[0]]
+        E = [(i,j) for j in np.where(dm[i]<r2[i])[0]]
         G.extend(E)
     return(np.array(G,dtype=np.int32))
 
@@ -118,4 +119,4 @@ if __name__ == "__main__":
     """
     usage : compare_graph.py original_graph.csv reconstructed_graph.csv
     """
-    compare_graph(nx.from_edgelist(read_graph(argv[1])[1]),nx.from_edgelist(read_graph(argv[2])[1]))
+    compare_graph(nx.from_edgelist(read_graph(argv[1])[1],nx.DiGraph()),nx.from_edgelist(read_graph(argv[2])[1],nx.DiGraph()))
