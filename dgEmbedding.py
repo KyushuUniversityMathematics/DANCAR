@@ -5,9 +5,6 @@ from __future__ import print_function
 import numpy as np
 import matplotlib as mpl
 mpl.use('Agg')
-
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
 import argparse
 import chainer
 import chainer.functions as F
@@ -23,6 +20,8 @@ from datetime import datetime as dt
 from consts import optim,dtypes
 import networkx as nx
 import shutil
+
+from graphUtil import *
 
 ## updater 
 class Updater(chainer.training.StandardUpdater):
@@ -116,96 +115,10 @@ class Evaluator(extensions.Evaluator):
         # transform radius
 #        dat[:,0] = np.maximum(dat[:,0],0)+0.1
         np.savetxt(os.path.join(self.args.outdir,"coords{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
-        plot_disks(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
+        if self.args.plot:
+            plot_disks(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
         self.count += 1
         return {"myval/none":0}
-
-# reconstruct digraph from arrangements
-def reconstruct(disks):
-    dim = (disks.shape[1]-1)//2
-    r = disks[:,0]
-    x = disks[:,1:(dim+1)]
-    c = disks[:,(dim+1):]
-    G = []
-    dm = np.sum((np.expand_dims(x,axis=0) - np.expand_dims(c,axis=1))**2,axis=2)
-    dm += np.max(r)*np.eye(len(dm))
-    for i in range(len(dm)):
-        E = [(i,j) for j in np.where(dm[i]<r[i])[0]]
-        G.extend(E)
-    return(np.array(G,dtype=np.int32))
-
-def plot_digraph(edge,fname):
-    G = nx.DiGraph()
-    G.add_edges_from(edge)
-    plt.figure(figsize=(15,15))
-    pos = nx.fruchterman_reingold_layout(G)
-    nx.draw_networkx(G,pos,node_color="#5050ff",font_size=0,node_size=75)
-    plt.savefig(fname)
-
-# plot results (works only with dim=2)
-def plot_disks(disks,fname):
-    fig = plt.figure()
-    ax = plt.axes()
-    cmap = plt.get_cmap("Dark2")
-    dim = (disks.shape[1]-1)//2
-    min_r = np.min(disks[:,0])
-    for i,v in enumerate(disks):
-        c = patches.Circle(xy=(v[1], v[2]), radius=v[0], fc=cmap(int(i%10)),alpha=0.4)
-        ax.add_patch(c)
-        ax.text(v[1+dim], v[2+dim], i, size = 20, color = cmap(int(i%10)))
-        # boundary
-        c = patches.Circle(xy=(v[1], v[2]), radius=v[0], ec='black', fill=False)
-        ax.add_patch(c)
-        # anchor
-        c = patches.Circle(xy=(v[1+dim], v[2+dim]), radius=min_r/100, ec='black', fill=True)
-        ax.add_patch(c)
-    plt.axis('scaled')
-    ax.set_aspect('equal')
-    plt.savefig(fname)
-    plt.close()
-
-# read graph from csv
-# def read_graph_old(fname):
-#     g = nx.DiGraph()
-#     g_trans = set()
-#     with open(fname) as infh:
-#         for line in infh:
-#             l = line.strip().split(',')
-#             g.add_edges_from([(l[i],l[i+1]) for i in range(len(l)-1)])
-#     pos_edge = []
-#     reachable = {}
-#     for v in g.nodes():
-#         reachable[v] = nx.descendants(g,v)
-#         for w in reachable[v]:
-#             pos_edge.append((v,w))
-#             g_trans.add((v,w))
-#         reachable[v].add(v)
-#         g_trans.add((v,v))
-#     neg_edge = []
-#     super_neg_edge = []
-#     for v in g.nodes():
-#         for w in g.nodes():
-#             if (v,w) not in g_trans:
-#                 neg_edge.append((v,w))
-#                 # pair of nodes with no common descendant
-#                 if not (reachable[v] & reachable[w]):
-#                     super_neg_edge.append((v,w))
-#     print("#edges {}, #vertices {}".format(len(pos_edge),len(g.nodes())))
-#     return (len(g.nodes()),pos_edge,neg_edge,super_neg_edge)
-
-# read graph from csv
-def read_graph(fname):
-    vert = set()
-    edge = set()
-    with open(fname) as infh:
-        for line in infh:
-            l = line.strip().split(',')
-            vert.add(l[0])
-            for i in range(len(l)-1):
-                edge.add((l[i],l[i+1]))
-                vert.add(l[i+1])
-    print("#edges {}, #vertices {}".format(len(edge),len(vert)))
-    return(np.array(list(vert),dtype=np.int32),np.array(list(edge),dtype=np.int32))
 
 ## main
 def main():
@@ -215,7 +128,7 @@ def main():
     parser.add_argument('--coordinates', '-c', help='Path to coordinate file for initialization')
     parser.add_argument('--batchsize_edge', '-be', type=int, default=100,
                         help='Number of samples in each edge mini-batch')
-    parser.add_argument('--batchsize_vert', '-bv', type=int, default=10,
+    parser.add_argument('--batchsize_vert', '-bv', type=int, default=1000,
                         help='Number of samples in each vertex mini-batch')
     parser.add_argument('--epoch', '-e', type=int, default=100,
                         help='Number of sweeps over the dataset to train')
@@ -241,7 +154,7 @@ def main():
     parser.add_argument('--lambda_neg', '-ln', type=float, default=1,
                         help='points stay apart')
     parser.add_argument('--lambda_anchor', '-la', type=float, default=0,
-                        help='anchor should reside in the disk')
+                        help='anchor should reside in the disk. set 0 for DiskEmbedding')
     parser.add_argument('--lambda_uniform_radius', '-lur', type=float, default=0,
                         help='Radius should be similar')
     parser.add_argument('--outdir', '-o', default='result',
@@ -252,6 +165,7 @@ def main():
                         help='visualisation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
     parser.add_argument('--reconstruct', '-r', action='store_true',help='reconstruct graph')
+    parser.add_argument('--plot', '-p', action='store_true',help='plot result')
     parser.add_argument('--training', '-t', action='store_false',help='reconstruct graph')
     args = parser.parse_args()
 
@@ -259,6 +173,9 @@ def main():
     save_args(args, args.outdir)
 
     chainer.config.autotune = True
+
+    vert,pos_edge=read_graph(args.input)
+    vnum = np.max(vert)+1
 
     ## ChainerMN
     if args.mpi:
@@ -272,6 +189,7 @@ def main():
             primary = True
             print(args)
             chainer.print_runtime_info()
+            print("#edges {}, #vertices {}".format(len(pos_edge),len(vert)))
         else:
             primary = False
         print("process {}".format(comm.rank))
@@ -279,12 +197,10 @@ def main():
         primary = True
         print(args)
         chainer.print_runtime_info()
+        print("#edges {}, #vertices {}".format(len(pos_edge),len(vert)))
         if args.gpu >= 0:
             chainer.cuda.get_device(args.gpu).use()
     
-#    vnum,pos_edge,neg_edge,super_neg_edge = read_graph(args.input)
-    vert,pos_edge=read_graph(args.input)
-    vnum = len(vert)
     edge_iter = iterators.SerialIterator(datasets.TupleDataset( pos_edge[:,0],pos_edge[:,1] ), args.batchsize_edge, shuffle=True)
     vert_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_vert, shuffle=True)
 #    neg_train_iter = iterators.SerialIterator(Dataset(neg_edge), args.batchsize, shuffle=True)
@@ -347,7 +263,7 @@ def main():
         trainer.extend(extensions.ProgressBar(update_interval=10))
         trainer.extend(extensions.LogReport(trigger=log_interval))
         trainer.extend(Evaluator(edge_iter, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
-        trainer.extend(extensions.ParameterStatistics(coords))
+#        trainer.extend(extensions.ParameterStatistics(coords))
 
 #        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
         # ChainerUI
@@ -372,10 +288,13 @@ def main():
         redge = reconstruct(dat)
         np.savetxt(os.path.join(args.outdir,"original.csv"),pos_edge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"reconstructed.csv"),redge,fmt='%i',delimiter=",")
-        plot_digraph(pos_edge,os.path.join(args.outdir,"original.jpg"))
-        plot_digraph(redge,os.path.join(args.outdir,"reconstructed.jpg"))
         np.savetxt(os.path.join(args.outdir,"coords.csv"), dat, fmt='%1.5f', delimiter=",")
-        plot_disks(dat,os.path.join(args.outdir,"plot.png"))
+        compare_graph(np2nx(pos_edge),np2nx(redge))
+
+        if args.plot:
+            plot_digraph(pos_edge,os.path.join(args.outdir,"original.jpg"))
+            plot_digraph(redge,os.path.join(args.outdir,"reconstructed.jpg"))
+            plot_disks(dat,os.path.join(args.outdir,"plot.png"))
 
 if __name__ == '__main__':
     main()
