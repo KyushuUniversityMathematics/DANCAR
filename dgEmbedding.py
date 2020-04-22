@@ -151,6 +151,9 @@ class Evaluator(extensions.Evaluator):
         else:
             return {"myval/none": 0}
 
+def plot_log(f,a,summary):
+    a.set_yscale('log')
+
 ## main
 def main():
     # command line argument parsing
@@ -226,7 +229,7 @@ def main():
     if args.mpi:
         import chainermn
         if args.gpu >= 0:
-            comm = chainermn.create_communicator('hierarchical')
+            comm = chainermn.create_communicator()
             chainer.cuda.get_device(comm.intra_rank).use()
         else:
             comm = chainermn.create_communicator('naive')
@@ -316,7 +319,7 @@ def main():
         trainer.extend(extensions.PrintReport(log_keys), trigger=log_interval)
 #        trainer.extend(extensions.PrintReport(log_keys), trigger=(1, 'iteration'))
         if extensions.PlotReport.available():
-            trainer.extend(extensions.PlotReport(log_keys[3:], 'epoch', file_name='loss.png'))
+            trainer.extend(extensions.PlotReport(log_keys[3:], 'epoch', file_name='loss.png',postprocess=plot_log))
         trainer.extend(extensions.ProgressBar(update_interval=10))
         trainer.extend(extensions.LogReport(trigger=log_interval))
 
