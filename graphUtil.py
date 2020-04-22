@@ -59,10 +59,12 @@ def reconstruct(disks):
     x = disks[:,1:(dim+1)]
     c = disks[:,(dim+1):]
     G = []
-    dm = np.sum((np.expand_dims(x,axis=0) - np.expand_dims(c,axis=1))**2,axis=2)
-    dm += np.max(r2)*np.eye(len(dm))
-    for i in range(len(dm)):
-        E = [(i,j) for j in np.where(dm[i]<r2[i])[0]]
+#    dm = np.sum((np.expand_dims(x,axis=0) - np.expand_dims(c,axis=1))**2,axis=2)
+#    dm += np.max(r2)*np.eye(len(dm))
+    for i in range(len(x)):
+        d = np.sum((c[i]-x)**2,axis=1)
+        d[i] += r2[i]
+        E = [(i,j) for j in np.where(d<r2[i])[0]]
         G.extend(E)
     return(np.array(G,dtype=np.int32))
 

@@ -20,6 +20,7 @@ from datetime import datetime as dt
 from consts import optim,dtypes
 import networkx as nx
 import shutil
+import random
 
 from graphUtil import *
 
@@ -30,6 +31,7 @@ class Updater(chainer.training.StandardUpdater):
         params = kwargs.pop('params')
         super(Updater, self).__init__(*args, **kwargs)
         self.args = params['args']
+        self.graph = params['graph']
         
     def update_core(self):
         # TODO: 
@@ -41,12 +43,12 @@ class Updater(chainer.training.StandardUpdater):
         r = F.relu(self.coords.W[:,0]) # radius
         x = self.coords.W[:,1:(self.args.dim+1)] # anchor
         c = self.coords.W[:,(self.args.dim+1):] # sphere centre
-        v, = self.converter(self.get_iterator('vertex').next())
         a,b = self.converter(self.get_iterator('main').next()) # edge
         loss = 0
 
         # anchor loss
         if self.args.lambda_anchor > 0: # DANCAR
+            v, = self.converter(self.get_iterator('anchor').next())
             loss_anc = F.average(F.relu(F.sqrt(F.sum((c[v]-x[v])**2,axis=1) + epsilon) - r[v] + self.args.margin))
             chainer.report({'loss_anc': loss_anc}, self.coords)
             loss += self.args.lambda_anchor * loss_anc
@@ -62,8 +64,16 @@ class Updater(chainer.training.StandardUpdater):
 
         # negative sample: we randomly pick vertices so it may contain edges
         if self.args.lambda_neg>0:
-            if self.args.batchsize_negative>0: 
-                na,nb = self.converter(self.get_iterator('negative').next()) # sample from non-edge            
+            v, = self.converter(self.get_iterator('vertex').next())
+            if self.args.batchsize_negative>0:
+                na, nb = [],[]
+                for u in v: # sample non-edges
+                    nnbor = set(nx.non_neighbors(self.graph, u))
+                    for q in random.sample(nnbor, min(self.args.batchsize_negative,len(list(nnbor)))):
+                        na.append(u)
+                        nb.append(q)
+                na = np.array(na)
+                nb = np.array(nb)
             else:  # random vertex pairs
                 na = v
                 nb = np.roll(v,1)
@@ -93,6 +103,7 @@ class Evaluator(extensions.Evaluator):
         params = kwargs.pop('params')
         super(Evaluator, self).__init__(*args, **kwargs)
         self.args = params['args']
+        self.graph = params['graph']
         self.count = 0
     def evaluate(self):
         coords = self.get_target('main')
@@ -104,12 +115,11 @@ class Evaluator(extensions.Evaluator):
             dat = coords.xp.asnumpy(coords.W.data).copy()
         else:
             dat = coords.W.data.copy()
+
+        np.savetxt(os.path.join(self.args.outdir,"coords{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
         if self.args.reconstruct:
             rg = reconstruct(dat)
             np.savetxt(os.path.join(self.args.outdir,"reconstructed{:0>4}.csv".format(self.count)),rg,fmt='%i',delimiter=",")
-        # transform radius
-#        dat[:,0] = np.maximum(dat[:,0],0)+0.1
-        np.savetxt(os.path.join(self.args.outdir,"coords{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
         if self.args.plot:
             plot_disks(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
         self.count += 1
@@ -125,7 +135,15 @@ class Evaluator(extensions.Evaluator):
             d = F.sqrt(F.sum((c[a]-x[b])**2,axis=1)+epsilon)
             loss_pos = F.average(F.relu(d + self.args.dag * r[b] - r[a]))
             # neg
-            na,nb = self.converter(self.get_iterator('negative').next()) # sample from non-edge            
+            v, = self.converter(self.get_iterator('vertex').next())
+            na, nb = [],[]
+            for u in v: # sample non-edges
+                nnbor = set(nx.non_neighbors(self.graph, u))
+                for q in nnbor:
+                    na.append(u)
+                    nb.append(q)
+            na = np.array(na)
+            nb = np.array(nb)
             d = F.sqrt(F.sum((c[na]-x[nb])**2,axis=1)+epsilon)
             rdiff = self.args.dag * r[nb] - r[na]
             loss_neg = F.average(F.relu(-d - rdiff))
@@ -141,10 +159,12 @@ def main():
     parser.add_argument('--coordinates', '-c', help='Path to coordinate file for initialization')
     parser.add_argument('--batchsize_edge', '-be', type=int, default=100,
                         help='Number of samples in each edge mini-batch')
-    parser.add_argument('--batchsize_vert', '-bv', type=int, default=100,
-                        help='Number of samples in each vertex mini-batch')
-    parser.add_argument('--batchsize_negative', '-bn', type=int, default=100,
-                        help='Number of samples in each negative edge mini-batch')
+    parser.add_argument('--batchsize_anchor', '-ba', type=int, default=-1,
+                        help='Number of samples in each anchor mini-batch')
+    parser.add_argument('--batchsize_vert', '-bv', type=int, default=-1,
+                        help='Number of samples in each vertex mini-batch (for sampling negative edges)')
+    parser.add_argument('--batchsize_negative', '-bn', type=int, default=0,
+                        help='Number of samples in each negative edge mini-batch (slow)')
     parser.add_argument('--vertex_offset', type=int, default=0, help='the smallest index of vertices')
     parser.add_argument('--epoch', '-e', type=int, default=100,
                         help='Number of sweeps over the dataset to train')
@@ -186,6 +206,15 @@ def main():
     parser.add_argument('--training', '-t', action='store_false',help='reconstruct graph')
     args = parser.parse_args()
 
+    # default batchsize
+    if args.batchsize_anchor == -1:
+        args.batchsize_anchor = 10*args.batchsize_edge
+    if args.batchsize_vert == -1:
+        if args.batchsize_negative == 0:
+            args.batchsize_vert = 10*args.batchsize_edge
+        else:
+            args.batchsize_vert = args.batchsize_edge
+
     args.outdir = os.path.join(args.outdir, dt.now().strftime('%m%d_%H%M'))
     save_args(args, args.outdir)
     chainer.config.autotune = True
@@ -216,16 +245,17 @@ def main():
         print("#edges {}, #vertices {}".format(len(pos_edge),len(vert)))
         if args.gpu >= 0:
             chainer.cuda.get_device(args.gpu).use()
-    
+
     edge_iter = iterators.SerialIterator(datasets.TupleDataset(pos_edge[:,0],pos_edge[:,1]), args.batchsize_edge, shuffle=True)
-    edge_test_iter = iterators.SerialIterator(datasets.TupleDataset(pos_edge[:,0],pos_edge[:,1]), len(pos_edge), shuffle=False)
     vert_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_vert, shuffle=True)
-    if args.batchsize_negative > 0:
-        neg_edge = np.array((nx.complement(nx.from_edgelist(pos_edge,nx.DiGraph()))).edges())
-        neg_iter = iterators.SerialIterator(datasets.TupleDataset(neg_edge[:,0],neg_edge[:,1]), args.batchsize_negative, shuffle=True)
-        neg_test_iter = iterators.SerialIterator(datasets.TupleDataset(neg_edge[:,0],neg_edge[:,1]), len(neg_edge), shuffle=False)
+    anchor_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_anchor, shuffle=True)
+    graph = nx.from_edgelist(pos_edge,nx.DiGraph())
+    if args.evaluate:
+        edge_test_iter = iterators.SerialIterator(datasets.TupleDataset(pos_edge[:,0],pos_edge[:,1]), len(pos_edge), shuffle=False)
+        vert_test_iter = iterators.SerialIterator(datasets.TupleDataset(vert), len(vert), shuffle=False)
     else:
-        neg_iter = iterators.SerialIterator(datasets.TupleDataset([[0]]),1) # dummy
+        edge_test_iter = iterators.SerialIterator(datasets.TupleDataset([[0]]),1) # dummy
+        vert_test_iter = iterators.SerialIterator(datasets.TupleDataset([[0]]),1) # dummy
 
     # initial embedding
     if args.coordinates:
@@ -265,16 +295,16 @@ def main():
 
     updater = Updater(
         models=coords,
-        iterator={'main': edge_iter, 'vertex': vert_iter, 'negative': neg_iter},  
+        iterator={'main': edge_iter, 'vertex': vert_iter, 'anchor': anchor_iter},  
         optimizer={'main': opt},
         device=args.gpu,
 #        converter=convert.ConcatWithAsyncTransfer(),
-        params={'args': args}
+        params={'args': args, 'graph': graph}
         )
     trainer = training.Trainer(updater, (args.epoch, 'epoch'), out=args.outdir)
 
     if primary:
-        log_interval = 100, 'iteration'
+        log_interval = 20, 'iteration'
         log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg','main/loss_anc']
         if args.evaluate:
             log_keys.extend(['myval/pos','myval/neg'])
@@ -282,13 +312,16 @@ def main():
             log_keys.append('main/loss_rad')
         trainer.extend(extensions.observe_lr('main'), trigger=log_interval)
         trainer.extend(extensions.LogReport(keys=log_keys, trigger=log_interval))
+#        trainer.extend(extensions.LogReport(keys=log_keys, trigger=log_interval))
         trainer.extend(extensions.PrintReport(log_keys), trigger=log_interval)
+#        trainer.extend(extensions.PrintReport(log_keys), trigger=(1, 'iteration'))
         if extensions.PlotReport.available():
             trainer.extend(extensions.PlotReport(log_keys[3:], 'epoch', file_name='loss.png'))
         trainer.extend(extensions.ProgressBar(update_interval=10))
         trainer.extend(extensions.LogReport(trigger=log_interval))
 
-        trainer.extend(Evaluator({'main': edge_test_iter, 'negative': neg_test_iter}, coords, params={'args': args}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
+        if args.vis_freq>0:
+            trainer.extend(Evaluator({'main': edge_test_iter, 'vertex': vert_test_iter}, coords, params={'args': args,'graph': graph}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
 #        trainer.extend(extensions.ParameterStatistics(coords))
 
 #        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
@@ -315,10 +348,10 @@ def main():
         np.savetxt(os.path.join(args.outdir,"original.csv"),pos_edge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"reconstructed.csv"),redge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"coords.csv"), dat, fmt='%1.5f', delimiter=",")
-        compare_graph(nx.from_edgelist(pos_edge,nx.DiGraph()),nx.from_edgelist(redge,nx.DiGraph()))
+        compare_graph(graph,nx.from_edgelist(redge,nx.DiGraph()))
         if args.plot:
-            plot_digraph(pos_edge,os.path.join(args.outdir,"original.jpg"))
-            plot_digraph(redge,os.path.join(args.outdir,"reconstructed.jpg"))
+            plot_digraph(pos_edge,os.path.join(args.outdir,"original.png"))
+            plot_digraph(redge,os.path.join(args.outdir,"reconstructed.png"))
             plot_disks(dat,os.path.join(args.outdir,"plot.png"))
 
 if __name__ == '__main__':
