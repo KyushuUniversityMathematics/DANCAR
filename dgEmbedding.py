@@ -109,7 +109,7 @@ class Evaluator(extensions.Evaluator):
         coords = self.get_target('main')
         if self.eval_hook:
             self.eval_hook(self)
-        if self.args.lambda_anchor == 0: # ancho = centre
+        if self.args.lambda_anchor == 0: # anchor = centre
             coords.W.array[:,1:(self.args.dim+1)] = coords.W.array[:,(self.args.dim+1):]
         if(self.args.gpu>-1):
             dat = coords.xp.asnumpy(coords.W.data).copy()
@@ -117,37 +117,18 @@ class Evaluator(extensions.Evaluator):
             dat = coords.W.data.copy()
 
         np.savetxt(os.path.join(self.args.outdir,"coords{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
+        redge = reconstruct(dat)
         if self.args.reconstruct:
-            rg = reconstruct(dat)
-            np.savetxt(os.path.join(self.args.outdir,"reconstructed{:0>4}.csv".format(self.count)),rg,fmt='%i',delimiter=",")
+            np.savetxt(os.path.join(self.args.outdir,"reconstructed{:0>4}.csv".format(self.count)),redge,fmt='%i',delimiter=",")
         if self.args.plot:
             plot_disks(dat,os.path.join(self.args.outdir,"plot{:0>4}.png".format(self.count)))
         self.count += 1
 
         # loss eval
-        if self.args.evaluate:
-            epsilon = 1e-10
-            # pos
-            a,b = self.converter(self.get_iterator('main').next()) # edge
-            r = F.relu(coords.W[:,0]) # radius
-            x = coords.W[:,1:(self.args.dim+1)] # anchor
-            c = coords.W[:,(self.args.dim+1):] # sphere centre
-            d = F.sqrt(F.sum((c[a]-x[b])**2,axis=1)+epsilon)
-            loss_pos = F.average(F.relu(d + self.args.dag * r[b] - r[a]))
-            # neg
-            v, = self.converter(self.get_iterator('vertex').next())
-            na, nb = [],[]
-            for u in v: # sample non-edges
-                nnbor = set(nx.non_neighbors(self.graph, u))
-                for q in nnbor:
-                    na.append(u)
-                    nb.append(q)
-            na = np.array(na)
-            nb = np.array(nb)
-            d = F.sqrt(F.sum((c[na]-x[nb])**2,axis=1)+epsilon)
-            rdiff = self.args.dag * r[nb] - r[na]
-            loss_neg = F.average(F.relu(-d - rdiff))
-            return {"myval/pos":loss_pos,"myval/neg":loss_neg}
+        if self.args.validation:
+            f1,precision,recall,accuracy = compare_graph(self.graph,nx.from_edgelist(redge,nx.DiGraph()),output=False)
+            anchor_violation, num_vert = check_anchor_containment(dat)
+            return {"myval/rec":recall,"myval/f1":f1, "myval/prc":precision, "myval/anc":anchor_violation/num_vert}
         else:
             return {"myval/none": 0}
 
@@ -159,6 +140,7 @@ def main():
     # command line argument parsing
     parser = argparse.ArgumentParser(description='Digraph Embedding')
     parser.add_argument('input', help='Path to digraph description file')
+    parser.add_argument('--validation', '-val', default=None, help='Path to edge file for validation')
     parser.add_argument('--coordinates', '-c', help='Path to coordinate file for initialization')
     parser.add_argument('--batchsize_edge', '-be', type=int, default=100,
                         help='Number of samples in each edge mini-batch')
@@ -184,7 +166,7 @@ def main():
                         help='norm of weight decay for regularization')
     parser.add_argument('--learning_rate', '-lr', type=float, default=5e-2,
                         help='learning rate')
-    parser.add_argument('--learning_rate_drop', '-ld', type=int, default=1,
+    parser.add_argument('--learning_rate_drop', '-ld', type=int, default=5,
                         help='how many times to half learning rate')
 #    parser.add_argument('--lambda_super_neg', '-lsn', type=float, default=0,
 #                        help='Super negative samples')
@@ -203,7 +185,6 @@ def main():
     parser.add_argument('--vis_freq', '-vf', type=int, default=2000,
                         help='visualisation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
-    parser.add_argument('--evaluate', '-ev', action='store_true',help='evaluate loss')
     parser.add_argument('--reconstruct', '-r', action='store_true',help='reconstruct graph')
     parser.add_argument('--plot', '-p', action='store_true',help='plot result')
     parser.add_argument('--training', '-t', action='store_false',help='reconstruct graph')
@@ -253,12 +234,12 @@ def main():
     vert_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_vert, shuffle=True)
     anchor_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_anchor, shuffle=True)
     graph = nx.from_edgelist(pos_edge,nx.DiGraph())
-    if args.evaluate:
-        edge_test_iter = iterators.SerialIterator(datasets.TupleDataset(pos_edge[:,0],pos_edge[:,1]), len(pos_edge), shuffle=False)
-        vert_test_iter = iterators.SerialIterator(datasets.TupleDataset(vert), len(vert), shuffle=False)
+    if args.validation and primary:
+        val_vert,val_edge=read_graph(args.validation,args.vertex_offset)
+        val_graph = nx.from_edgelist(val_edge,nx.DiGraph())
+        print("validation #edges {}, #vertices {}".format(len(val_edge),len(val_vert)))
     else:
-        edge_test_iter = iterators.SerialIterator(datasets.TupleDataset([[0]]),1) # dummy
-        vert_test_iter = iterators.SerialIterator(datasets.TupleDataset([[0]]),1) # dummy
+        val_graph = graph
 
     # initial embedding
     if args.coordinates:
@@ -309,8 +290,8 @@ def main():
     if primary:
         log_interval = 20, 'iteration'
         log_keys = ['iteration','lr','elapsed_time','main/loss_pos', 'main/loss_neg','main/loss_anc']
-        if args.evaluate:
-            log_keys.extend(['myval/pos','myval/neg'])
+        if args.validation:
+            log_keys.extend(['myval/prc','myval/rec','myval/f1','myval/anc'])
         if args.lambda_uniform_radius>0:
             log_keys.append('main/loss_rad')
         trainer.extend(extensions.observe_lr('main'), trigger=log_interval)
@@ -322,12 +303,11 @@ def main():
             trainer.extend(extensions.PlotReport(log_keys[3:], 'epoch', file_name='loss.png',postprocess=plot_log))
         trainer.extend(extensions.ProgressBar(update_interval=10))
         trainer.extend(extensions.LogReport(trigger=log_interval))
-
+        trainer.extend(extensions.snapshot_object(opt, 'opt{.updater.epoch}.npz'), trigger=(args.epoch, 'epoch'))
         if args.vis_freq>0:
-            trainer.extend(Evaluator({'main': edge_test_iter, 'vertex': vert_test_iter}, coords, params={'args': args,'graph': graph}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
+            trainer.extend(Evaluator({'main': edge_iter}, coords, params={'args': args,'graph': val_graph}, device=args.gpu),trigger=(args.vis_freq, 'iteration'))
 #        trainer.extend(extensions.ParameterStatistics(coords))
 
-#        shutil.copyfile(args.input,os.path.join(args.outdir,os.path.basename(args.input)))
         # ChainerUI
         save_args(args, args.outdir)
 
@@ -351,7 +331,7 @@ def main():
         np.savetxt(os.path.join(args.outdir,"original.csv"),pos_edge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"reconstructed.csv"),redge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"coords.csv"), dat, fmt='%1.5f', delimiter=",")
-        compare_graph(graph,nx.from_edgelist(redge,nx.DiGraph()))
+        compare_graph(val_graph,nx.from_edgelist(redge,nx.DiGraph()))
         if args.plot:
             plot_digraph(pos_edge,os.path.join(args.outdir,"original.png"))
             plot_digraph(redge,os.path.join(args.outdir,"reconstructed.png"))

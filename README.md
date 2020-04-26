@@ -25,14 +25,19 @@ python dgEmbedding.py -h
 
 The following creates the "result" directory.
 
-Disk embedding
+Command-line arguments
 ```
-    python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -la 0 -ln 1 --dag 1
+    python dgEmbedding.py -h
 ```
 
 DANCAR embedding
 ```
     python dgEmbedding.py example/circle.csv -e 100 -be 3 -bv 3 -la 1 -ln 3 --dag 0
+```
+
+Disk embedding
+```
+    python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -la 0 -ln 1 --dag 1
 ```
 
 

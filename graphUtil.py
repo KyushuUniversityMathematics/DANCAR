@@ -97,7 +97,18 @@ def reconstruct(disks):
 #     print("#edges {}, #vertices {}".format(len(pos_edge),len(g.nodes())))
 #     return (len(g.nodes()),pos_edge,neg_edge,super_neg_edge)
 
-def compare_graph(go,gr):
+def check_anchor_containment(disks):
+    dim = (disks.shape[1]-1)//2
+    r2 = disks[:,0]**2
+    x = disks[:,1:(dim+1)]
+    c = disks[:,(dim+1):]
+    violation = 0
+    for i in range(len(x)):
+        if np.sum((x[i]-c[i])**2) > r2[i]:
+            violation += 1
+    return(violation,len(x))
+
+def compare_graph(go,gr,output=True):
     n  = go.number_of_nodes()
     eo = set(go.edges())
     er = set(gr.edges())
@@ -109,16 +120,20 @@ def compare_graph(go,gr):
     recall    = tp / (tp + fn)
     f1_score  = (2 * recall * precision) / (recall + precision)
 
-    print("\n\n Confusion Matrix")
-    print(f"{tp}\t{fp}")
-    print(f"{fn}\t{tn}")
-    print(f"f1_score    : {f1_score}")
-    print(f"precision   : {precision} = {tp} / {tp + fp}")
-    print(f"recall      : {recall} = {tp} / {tp + fn}")
-    print(f"accuracy    : {accuracy} = {tp + tn} / {n * (n-1)}")
-    
+    if output:
+        print("\n\n Confusion Matrix")
+        print(f"{tp}\t{fp}")
+        print(f"{fn}\t{tn}")
+        print(f"f1_score    : {f1_score}")
+        print(f"precision   : {precision} = {tp} / {tp + fp}")
+        print(f"recall      : {recall} = {tp} / {tp + fn}")
+        print(f"accuracy    : {accuracy} = {tp + tn} / {n * (n-1)}")
+
+    return(f1_score,precision,recall,accuracy)
+
 if __name__ == "__main__":
     """
     usage : compare_graph.py original_graph.csv reconstructed_graph.csv
     """
+#    print(check_anchor_containment(np.loadtxt(argv[1],delimiter=",")))
     compare_graph(nx.from_edgelist(read_graph(argv[1])[1],nx.DiGraph()),nx.from_edgelist(read_graph(argv[2])[1],nx.DiGraph()))
