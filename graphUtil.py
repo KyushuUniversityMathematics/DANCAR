@@ -53,7 +53,7 @@ def plot_disks(disks,fname):
     plt.close()
 
 # reconstruct digraph from arrangements
-def reconstruct(disks):
+def reconstruct(disks, max_edges=1e7):
     dim = (disks.shape[1]-1)//2
     r2 = disks[:,0]**2
     x = disks[:,1:(dim+1)]
@@ -66,6 +66,8 @@ def reconstruct(disks):
         d[i] += r2[i]
         E = [(i,j) for j in np.where(d<r2[i])[0]]
         G.extend(E)
+        if(len(G)>max_edges):
+            break
     return(np.array(G,dtype=np.int32))
 
 # read graph from csv

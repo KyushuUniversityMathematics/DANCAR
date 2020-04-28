@@ -62,7 +62,7 @@ class Updater(chainer.training.StandardUpdater):
             chainer.report({'loss_pos': loss_pos}, self.coords)
             loss += self.args.lambda_pos*loss_pos
 
-        # negative sample: we randomly pick vertices so it may contain edges
+        # negative sample
         if self.args.lambda_neg>0:
             v, = self.converter(self.get_iterator('vertex').next())
             if self.args.batchsize_negative>0:
@@ -127,8 +127,12 @@ class Evaluator(extensions.Evaluator):
         # loss eval
         if self.args.validation:
             f1,precision,recall,accuracy = compare_graph(self.graph,nx.from_edgelist(redge,nx.DiGraph()),output=False)
-            anchor_violation, num_vert = check_anchor_containment(dat)
-            return {"myval/rec":recall,"myval/f1":f1, "myval/prc":precision, "myval/anc":anchor_violation/num_vert}
+            if self.args.lambda_anchor>0:
+                anchor_violation, num_vert = check_anchor_containment(dat)
+                anchor_ratio = anchor_violation/num_vert
+            else:
+                anchor_ratio = 0
+            return {"myval/rec":recall,"myval/f1":f1, "myval/prc":precision, "myval/anc":anchor_ratio}
         else:
             return {"myval/none": 0}
 
