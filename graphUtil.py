@@ -1,10 +1,10 @@
 import networkx as nx
-from sys import argv
 import matplotlib as mpl
 mpl.use('Agg')
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import numpy as np
+import argparse
 
 # read graph from csv
 def read_graph(fname,offset=0):
@@ -53,21 +53,18 @@ def plot_disks(disks,fname):
     plt.close()
 
 # reconstruct digraph from arrangements
-def reconstruct(disks, max_edges=1e7):
+def reconstruct(disks, dag=0.0, max_edges=1e7):
     dim = (disks.shape[1]-1)//2
-    r2 = disks[:,0]**2
     x = disks[:,1:(dim+1)]
     c = disks[:,(dim+1):]
     G = []
 #    dm = np.sum((np.expand_dims(x,axis=0) - np.expand_dims(c,axis=1))**2,axis=2)
 #    dm += np.max(r2)*np.eye(len(dm))
     for i in range(len(x)):
-        d = np.sum((c[i]-x)**2,axis=1)
-        d[i] += r2[i]
-        E = [(i,j) for j in np.where(d<r2[i])[0]]
+        d = np.sqrt(np.sum((c[i]-x)**2,axis=1))
+        d[i] += disks[i,0]
+        E = [(i,j) for j in np.where(d+dag*disks[:,0] < disks[i,0])[0]]
         G.extend(E)
-        if(len(G)>max_edges):
-            break
     return(np.array(G,dtype=np.int32))
 
 # read graph from csv
@@ -118,9 +115,9 @@ def compare_graph(go,gr,output=True):
     tn = n * (n-1) - tp - fp - fn
 
     accuracy  = (tp + tn) / (n * (n-1))
-    precision = tp / (tp + fp)
-    recall    = tp / (tp + fn)
-    f1_score  = (2 * recall * precision) / (recall + precision)
+    precision = tp / max((tp + fp),1)
+    recall    = tp / max((tp + fn),1)
+    f1_score  = (2 * recall * precision) / max((recall + precision),1)
 
     if output:
         print("\n\n Confusion Matrix")
@@ -134,8 +131,24 @@ def compare_graph(go,gr,output=True):
     return(f1_score,precision,recall,accuracy)
 
 if __name__ == "__main__":
-    """
-    usage : compare_graph.py original_graph.csv reconstructed_graph.csv
-    """
-#    print(check_anchor_containment(np.loadtxt(argv[1],delimiter=",")))
-    compare_graph(nx.from_edgelist(read_graph(argv[1])[1],nx.DiGraph()),nx.from_edgelist(read_graph(argv[2])[1],nx.DiGraph()))
+    parser = argparse.ArgumentParser(description='Digraph Embedding')
+    parser.add_argument('--input', '-i', help='Path to digraph description file')
+    parser.add_argument('--reconstructed', '-r', default="reconstructed.csv", help='Path to digraph description file')
+    parser.add_argument('--coordinates', '-c', help='Path to coordinate file')
+    parser.add_argument('--dag', type=float, default=0, help='0:non-acyclic, 1:acyclic')
+    args = parser.parse_args()
+
+    if args.coordinates:
+        print("reconstructing...")
+        dat = np.loadtxt(args.coordinates,delimiter=",")
+        redge = reconstruct(dat,dag=args.dag)
+        if args.reconstructed:
+            np.savetxt(args.reconstructed,redge,fmt='%i',delimiter=",")
+        print("Anchor violation/All vertices = ",check_anchor_containment(dat))
+        reconstG = nx.from_edgelist(redge)
+    else:
+        reconstG = nx.from_edgelist(read_graph(args.reconstructed)[1],nx.DiGraph())
+
+    if args.input:
+        print("comparing...")
+        compare_graph(nx.from_edgelist(read_graph(args.input)[1],nx.DiGraph()),reconstG)

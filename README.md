@@ -40,10 +40,27 @@ Disk embedding
     python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -la 0 -ln 1 --dag 1
 ```
 
-
 - Parallel learning using MPI
 ```
     mpiexec -n 4 python dgEmbedding.py example/circle.csv --mpi
+```
+
+- Result
+The coodinates sare saved to the file "coords.csv". 
+Each line represents a vertex. The first entry is the radius. 
+If the embedding dimension is d,
+next d entries are the coordinates of the anchor, and the last d entries are those of the centre.
+
+Reconstructed graph edges are stored in the file "reconstructed.csv".
+
+We can also reconstruct edges from coordinates saved in "coords.csv" and store them in "reconstruct.csv" by
+```
+    python graphUtil.py -c coords.csv -r reconstructed.csv
+```
+
+To compare the original and the reconstructed graphs,
+```
+    python graphUtil.py -i original.csv -r reconstructed.csv
 ```
 
 - Random sample generation

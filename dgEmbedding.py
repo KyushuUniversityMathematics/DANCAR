@@ -15,7 +15,7 @@ from chainer.dataset import dataset_mixin, convert, concat_examples, tabular
 import pandas as pd
 from chainerui.utils import save_args
 
-import os
+import os,sys
 from datetime import datetime as dt
 from consts import optim,dtypes
 import networkx as nx
@@ -58,7 +58,7 @@ class Updater(chainer.training.StandardUpdater):
         # positive sample: a contains b
         if self.args.lambda_pos > 0:
             d = F.sqrt(F.sum((c[a]-x[b])**2,axis=1)+epsilon)
-            loss_pos = F.average(F.relu(d + self.args.margin + self.args.dag * r[b] - r[a]))
+            loss_pos = F.average(F.relu(self.args.margin + d + self.args.dag * r[b] - r[a]))
             chainer.report({'loss_pos': loss_pos}, self.coords)
             loss += self.args.lambda_pos*loss_pos
 
@@ -78,8 +78,7 @@ class Updater(chainer.training.StandardUpdater):
                 na = v
                 nb = np.roll(v,1)
             d = F.sqrt(F.sum((c[na]-x[nb])**2,axis=1)+epsilon)
-            rdiff = self.args.dag * r[nb] - r[na]
-            loss_neg = F.average(F.relu(-d + self.args.margin - rdiff))
+            loss_neg = F.average(F.relu(self.args.margin - (d + self.args.dag * r[nb] - r[na])))
             chainer.report({'loss_neg': loss_neg}, self.coords)
             loss += self.args.lambda_neg * loss_neg
         
@@ -117,7 +116,7 @@ class Evaluator(extensions.Evaluator):
             dat = coords.W.data.copy()
 
         np.savetxt(os.path.join(self.args.outdir,"coords{:0>4}.csv".format(self.count)), dat, fmt='%1.5f', delimiter=",")
-        redge = reconstruct(dat)
+        redge = reconstruct(dat,dag=self.args.dag)
         if self.args.reconstruct:
             np.savetxt(os.path.join(self.args.outdir,"reconstructed{:0>4}.csv".format(self.count)),redge,fmt='%i',delimiter=",")
         if self.args.plot:
@@ -331,15 +330,18 @@ def main():
             dat = coords.W.data
         if args.lambda_anchor == 0: # anchor = centre
             dat[:,1:(args.dim+1)] = dat[:,(args.dim+1):]
-        redge = reconstruct(dat)
+        redge = reconstruct(dat,dag=args.dag)
         np.savetxt(os.path.join(args.outdir,"original.csv"),pos_edge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"reconstructed.csv"),redge,fmt='%i',delimiter=",")
         np.savetxt(os.path.join(args.outdir,"coords.csv"), dat, fmt='%1.5f', delimiter=",")
-        compare_graph(val_graph,nx.from_edgelist(redge,nx.DiGraph()))
+        f1,prc,rec,acc = compare_graph(val_graph,nx.from_edgelist(redge,nx.DiGraph()))
         if args.plot:
             plot_digraph(pos_edge,os.path.join(args.outdir,"original.png"))
             plot_digraph(redge,os.path.join(args.outdir,"reconstructed.png"))
             plot_disks(dat,os.path.join(args.outdir,"plot.png"))
+        with open(os.path.join(args.outdir,"args.txt"), 'w') as fh:
+            fh.write(" ".join(sys.argv))
+            fh.write(f"f1: {f1}, precision: {prc}, recall: {rec}, accuracy: {acc}")
 
 if __name__ == '__main__':
     main()
