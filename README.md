@@ -76,8 +76,3 @@ To compare the original and the reconstructed graphs,
 ```
     python graphUtil.py -i original.csv -r reconstructed.csv
 ```
-
-- Random sample generation
-```
-python disk2dag.py -o outdir
-```
