@@ -1,5 +1,19 @@
 Embedding of directed graphs
 =============
+This code computes an embedding of a directed graph 
+(that is, it associates vectors for each vertex) so that the existence of an edge
+is modeled by the geometry.
+
+More precisely, each vertex is represented by a ball and a point (called the anchor) contained in the ball.
+That is, each vertex is identified by
+- the coordinates of the centre in R^n
+- the radius
+- the coordinates of the anchor in R^n
+where R^n is the n-dimensional Euclidean space.
+A directed edge (u,v) is modeled by the relation that the anchor of v is contained in the ball of u.
+
+## License
+MIT License
 
 ## Requirements
 - Python 3: [Anaconda](https://www.anaconda.com/download/) is recommended
@@ -46,7 +60,7 @@ Disk embedding
 ```
 
 - Result
-The coodinates sare saved to the file "coords.csv". 
+The coordinates are saved to the file "coords.csv". 
 Each line represents a vertex. The first entry is the radius. 
 If the embedding dimension is d,
 next d entries are the coordinates of the anchor, and the last d entries are those of the centre.
