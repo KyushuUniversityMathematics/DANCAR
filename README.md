@@ -1,5 +1,7 @@
 Embedding of directed graphs
 =============
+Written by Shizuo KAJI
+
 This code computes an embedding of a directed graph 
 (that is, it associates vectors for each vertex) so that the existence of an edge
 is modeled by the geometry.
@@ -12,6 +14,9 @@ That is, each vertex is identified by
 where R^n is the n-dimensional Euclidean space.
 A directed edge (u,v) is modeled by the relation that the anchor of v is contained in the ball of u.
 
+For details, look at 
+- N. Hata, S. Kaji, A. Yoshida, and K. Fujisawa, Nested Subspace Arrangement for Representation of Relational Data, ICML2020.
+
 ## License
 MIT License
 
@@ -21,13 +26,12 @@ MIT License
 - for parallel learning: mpi4py: `conda install mpi4py` or `pip install mpi4py` 
 
 # How to use
-- data file specification
-e.g.
+- The input text file describing a directed graph should look as follows:
 ```
 0,1,2,3,4
 3,5,6
 ```
-Each line corresponds to a chain denoted by a sequence of vertex indices.
+Each line corresponds to a chain of directed edges denoted by a sequence of vertex indices.
 Vertex ID should be integer from 0 to n-1
 
 - to see command line options
@@ -35,28 +39,25 @@ Vertex ID should be integer from 0 to n-1
 python dgEmbedding.py -h
 ```
 
-- toy examples
+- Toy examples
 
-The following creates the "result" directory.
-
-Command-line arguments
-```
-    python dgEmbedding.py -h
-```
+The following creates the "result" directory, where outputs are stored.
 
 DANCAR embedding
 ```
-    python dgEmbedding.py example/circle.csv -e 100 -be 3 -bv 3 -la 1 -ln 3 --dag 0
+    python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -bn 1 -ln 1 -la 1 --dag 0 -p
 ```
 
 Disk embedding
 ```
-    python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -la 0 -ln 1 --dag 1
+    python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -bn 1 -ln 1 -lur 0.5 -la 0 --dag 1 -p
 ```
+For this simple acyclic example, Disk embedding produces visually more pleasing results.
 
 - Parallel learning using MPI
+To reproduce the result with WordNet described in the paper:
 ```
-    mpiexec -n 4 python dgEmbedding.py example/circle.csv --mpi
+    mpiexec -n 10 python dgEmbedding.py example/wordnet_sorted.csv --mpi -ln 2000 -d 10 -m 0.01 -ld 10 --epoch 1000 -val example/wordnet_sorted.csv
 ```
 
 - Result

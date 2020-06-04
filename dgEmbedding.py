@@ -36,7 +36,6 @@ class Updater(chainer.training.StandardUpdater):
     def update_core(self):
         # TODO: 
         # log parametrisation of radius?
-        # L2 norm for distance?
 
         epsilon = 1e-10
         opt = self.get_optimizer('main')
@@ -67,7 +66,7 @@ class Updater(chainer.training.StandardUpdater):
             v, = self.converter(self.get_iterator('vertex').next())
             if self.args.batchsize_negative>0:
                 na, nb = [],[]
-                for u in v: # sample non-edges
+                for u in v: # sample non-edges. accurate but slow
                     nnbor = set(nx.non_neighbors(self.graph, u))
                     for q in random.sample(nnbor, min(self.args.batchsize_negative,len(list(nnbor)))):
                         na.append(u)
@@ -78,20 +77,22 @@ class Updater(chainer.training.StandardUpdater):
                 na = v
                 nb = np.roll(v,1)
             d = F.sqrt(F.sum((c[na]-x[nb])**2,axis=1)+epsilon)
-            loss_neg = F.average(F.relu(self.args.margin - (d + self.args.dag * r[nb] - r[na])))
+            loss_neg = F.average(F.relu(self.args.margin - (d - r[na])))
+#            loss_neg = F.average(F.relu(self.args.margin - (d + self.args.dag * r[nb] - r[na])))
             chainer.report({'loss_neg': loss_neg}, self.coords)
             loss += self.args.lambda_neg * loss_neg
         
         # radius should be similar
         if self.args.lambda_uniform_radius>0:            
-            loss_uniform_radius = F.average( (F.max(r)-F.min(r))**2 )
+            loss_uniform_radius = (F.max(r)-F.min(r))**2
             chainer.report({'loss_rad': loss_uniform_radius}, self.coords)
             loss += self.args.lambda_uniform_radius * loss_uniform_radius
 
-        # update
+        # update the coordinates
         self.coords.cleargrads()
         loss.backward()
         opt.update(loss=loss)
+        self.coords.W.array[:,0] = self.coords.xp.clip(self.coords.W.array[:,0],a_min=0.01,a_max=None)
 
 # evaluator
 class Evaluator(extensions.Evaluator):
@@ -142,17 +143,17 @@ def plot_log(f,a,summary):
 def main():
     # command line argument parsing
     parser = argparse.ArgumentParser(description='Digraph Embedding')
-    parser.add_argument('input', help='Path to digraph description file')
-    parser.add_argument('--validation', '-val', default=None, help='Path to edge file for validation')
-    parser.add_argument('--coordinates', '-c', help='Path to coordinate file for initialization')
+    parser.add_argument('input', help='Path to the digraph description file')
+    parser.add_argument('--validation', '-val', default=None, help='Path to the digraph description file for validation')
+    parser.add_argument('--coordinates', '-c', help='Path to the coordinate file for initialization')
     parser.add_argument('--batchsize_edge', '-be', type=int, default=100,
                         help='Number of samples in each edge mini-batch')
     parser.add_argument('--batchsize_anchor', '-ba', type=int, default=-1,
                         help='Number of samples in each anchor mini-batch')
     parser.add_argument('--batchsize_vert', '-bv', type=int, default=-1,
-                        help='Number of samples in each vertex mini-batch (for sampling negative edges)')
+                        help='Number of samples in each vertex mini-batch (used for sampling negative edges)')
     parser.add_argument('--batchsize_negative', '-bn', type=int, default=0,
-                        help='Number of samples in each negative edge mini-batch (slow)')
+                        help='Number of negative edges sampled for each vertex mini-batch (positive: exact negative edge sampling, negative: random sampling to approximate negative edges)')
     parser.add_argument('--vertex_offset', type=int, default=0, help='the smallest index of vertices')
     parser.add_argument('--epoch', '-e', type=int, default=100,
                         help='Number of sweeps over the dataset to train')
@@ -161,7 +162,7 @@ def main():
     parser.add_argument('--dim', '-d', type=int, default=2,
                         help='Embedding dimension')
     parser.add_argument('--dag', type=float, default=0, help='0:non-acyclic, 1:acyclic')
-    parser.add_argument('--margin', '-m', type=float, default=0.1,
+    parser.add_argument('--margin', '-m', type=float, default=0.01,
                         help='margin for the metric boundary')
     parser.add_argument('--weight_decay', '-wd', type=float, default=0,
                         help='weight decay for regularization on coordinates')
@@ -174,13 +175,13 @@ def main():
 #    parser.add_argument('--lambda_super_neg', '-lsn', type=float, default=0,
 #                        help='Super negative samples')
     parser.add_argument('--lambda_pos', '-lp', type=float, default=1,
-                        help='edges force containment')
+                        help='weight for loss for positive edges')
     parser.add_argument('--lambda_neg', '-ln', type=float, default=1,
-                        help='points stay apart')
+                        help='weight for loss for negative edges')
     parser.add_argument('--lambda_anchor', '-la', type=float, default=1,
                         help='anchor should reside in the disk. if set to 0, anchors are fixed to the centre of the spheres')
     parser.add_argument('--lambda_uniform_radius', '-lur', type=float, default=0,
-                        help='Radius should be similar')
+                        help='all radiuses should be similar')
     parser.add_argument('--outdir', '-o', default='result',
                         help='Directory to output the result')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam',
@@ -188,15 +189,15 @@ def main():
     parser.add_argument('--vis_freq', '-vf', type=int, default=2000,
                         help='visualisation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
-    parser.add_argument('--reconstruct', '-r', action='store_true',help='reconstruct graph')
-    parser.add_argument('--plot', '-p', action='store_true',help='plot result')
-    parser.add_argument('--training', '-t', action='store_false',help='reconstruct graph')
+    parser.add_argument('--reconstruct', '-r', action='store_true',help='reconstruct graph during evaluation')
+    parser.add_argument('--plot', '-p', action='store_true',help='plot result (dim=2 only)')
+#    parser.add_argument('--training', '-t', action='store_false',help='reconstruct graph')
     args = parser.parse_args()
 
     # default batchsize
-    if args.batchsize_anchor == -1:
+    if args.batchsize_anchor < 0:
         args.batchsize_anchor = 10*args.batchsize_edge
-    if args.batchsize_vert == -1:
+    if args.batchsize_vert < 0:
         if args.batchsize_negative == 0:
             args.batchsize_vert = 10*args.batchsize_edge
         else:
@@ -233,6 +234,7 @@ def main():
         if args.gpu >= 0:
             chainer.cuda.get_device(args.gpu).use()
 
+    # data
     edge_iter = iterators.SerialIterator(datasets.TupleDataset(pos_edge[:,0],pos_edge[:,1]), args.batchsize_edge, shuffle=True)
     vert_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_vert, shuffle=True)
     anchor_iter = iterators.SerialIterator(datasets.TupleDataset(vert), args.batchsize_anchor, shuffle=True)
@@ -257,7 +259,7 @@ def main():
         coords[:,0] = 0.1
     coords = L.Parameter(coords)
     
-    # Set up an optimizer
+    # set up an optimizer
     def make_optimizer(model):
         if args.optimizer in ['SGD','Momentum','CMomentum','AdaGrad','RMSprop','NesterovAG','LBFGS']:
             optimizer = optim[args.optimizer](lr=args.learning_rate)
@@ -319,9 +321,10 @@ def main():
     elif args.optimizer in ['Adam','AdaBound','Eve']:
         trainer.extend(extensions.ExponentialShift("alpha", 0.5, optimizer=opt), trigger=(args.epoch/args.learning_rate_drop, 'epoch'))
 
-    if args.training:
-        trainer.run()
+#    if args.training:
+    trainer.run()
 
+    # result
     if primary:
         # save DAG data file
         if(args.gpu>-1):
