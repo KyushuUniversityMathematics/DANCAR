@@ -186,8 +186,8 @@ def main():
                         help='Directory to output the result')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam',
                         help='optimizer')
-    parser.add_argument('--vis_freq', '-vf', type=int, default=2000,
-                        help='visualisation frequency in iteration')
+    parser.add_argument('--vis_freq', '-vf', type=int, default=-1,
+                        help='evaluation frequency in iteration')
     parser.add_argument('--mpi', action='store_true',help='parallelise with MPI')
     parser.add_argument('--reconstruct', '-r', action='store_true',help='reconstruct graph during evaluation')
     parser.add_argument('--plot', '-p', action='store_true',help='plot result (dim=2 only)')
@@ -245,6 +245,9 @@ def main():
         print("validation #edges {}, #vertices {}".format(len(val_edge),len(val_vert)))
     else:
         val_graph = graph
+
+    if args.vis_freq < 0:
+        args.vis_freq = int(len(pos_edge)*args.epoch/10)
 
     # initial embedding
     if args.coordinates:

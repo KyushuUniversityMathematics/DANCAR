@@ -57,7 +57,7 @@ For this simple acyclic example, Disk embedding produces visually more pleasing 
 - Parallel learning using MPI
 To reproduce the result with WordNet described in the paper:
 ```
-    mpiexec -n 10 python dgEmbedding.py example/wordnet_sorted.csv --mpi -ln 2000 -d 10 -m 0.01 -ld 10 --epoch 1000 -val example/wordnet_sorted.csv
+    mpiexec -n 10 python dgEmbedding.py example/wordnet_sorted.csv --mpi -be 10000 -ln 2000 -d 10 -m 0.01 -ld 10 --epoch 1000 -val example/wordnet_sorted.csv
 ```
 
 - Result
