@@ -3,15 +3,16 @@ Embedding of directed graphs
 Written by Shizuo KAJI
 
 This code computes an embedding of a directed graph 
-(that is, it associates vectors for each vertex) so that the existence of an edge
+(that is, it associates a vector for each vertex) so that the existence of an edge
 is modeled by the geometry.
 
 More precisely, each vertex is represented by a ball and a point (called the anchor) contained in the ball.
 That is, each vertex is identified by
-- the coordinates of the centre in R^n
+- the coordinates of the centre in R^d
 - the radius
-- the coordinates of the anchor in R^n
-where R^n is the n-dimensional Euclidean space.
+- the coordinates of the anchor in R^d
+
+where R^d is the d-dimensional Euclidean space.
 A directed edge (u,v) is modeled by the relation that the anchor of v is contained in the ball of u.
 
 For details, look at 
@@ -25,7 +26,7 @@ MIT License
 - Python libraries: Chainer, chainerui:  `pip install chainer chainerui`
 - for parallel learning: mpi4py: `conda install mpi4py` or `pip install mpi4py` 
 
-# How to use
+## How to use
 - The input text file describing a directed graph should look as follows:
 ```
 0,1,2,3,4
@@ -48,19 +49,32 @@ DANCAR embedding
     python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -bn 1 -ln 1 -la 1 --dag 0 -p
 ```
 
-Disk embedding
+[Disk embedding](https://arxiv.org/abs/1902.04335)
 ```
     python dgEmbedding.py example/UK.csv -e 100 -be 3 -bv 3 -bn 1 -ln 1 -lur 0.5 -la 0 --dag 1 -p
 ```
 For this simple acyclic example, Disk embedding produces visually more pleasing results.
 
+
 - Parallel learning using MPI
-To reproduce the result with WordNet described in the paper:
+
+To reproduce the reconstruction experiment with WordNet described in the paper:
 ```
     mpiexec -n 10 python dgEmbedding.py example/wordnet_sorted.csv --mpi -be 10000 -ln 2000 -d 10 -m 0.01 -ld 10 --epoch 1000 -val example/wordnet_sorted.csv
 ```
 
-- Result
+To reproduce the link prediction experiment with WordNet described in the paper:
+```
+    mpiexec -n 10 python dgEmbedding.py example/wordnet_sorted_train_50percent.csv --mpi -be 10000 -ln 2000 -d 10 -m 0.01 -ld 10 --epoch 1000 -val example/wordnet_sorted.csv
+```
+
+In both cases, the performance is evaluated by
+```
+    python graphUtil.py -i example/wordnet_sorted.csv -r result/reconstructed.csv
+```
+
+
+## Result
 The coordinates are saved to the file "coords.csv". 
 Each line represents a vertex. The first entry is the radius. 
 If the embedding dimension is d,
